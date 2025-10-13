@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=65.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "worker-sdk"
+version = "0.1.0"
+description = "SQS-driven worker SDK for parallel ML pipelines"
+requires-python = ">=3.9"
+dependencies = [
+    "boto3>=1.28.0",
+    "pyyaml>=6.0",
+]
+

@@ -1,0 +1,33 @@
+# Default values for worker-chart
+# Override these in your service's values.yaml
+
+replicaCount: 1
+
+image:
+  repository: ""
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+resources:
+  limits:
+    cpu: "2"
+    memory: "4Gi"
+    # nvidia.com/gpu: "1"  # Uncomment for GPU
+  requests:
+    cpu: "1"
+    memory: "2Gi"
+
+keda:
+  enabled: true
+  minReplicaCount: 0
+  maxReplicaCount: 10
+  targetValue: 1
+  cooldownPeriod: 120
+
+queues:
+  input: ""
+  next: ""
+
+env: []
+secrets: []
+

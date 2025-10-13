@@ -1,0 +1,32 @@
+{
+  "dashboard": {
+    "title": "Worker Pipeline Metrics",
+    "panels": [
+      {
+        "title": "SQS Backlog",
+        "targets": ["ApproximateNumberOfMessages"]
+      },
+      {
+        "title": "Active Replicas",
+        "targets": ["kube_deployment_status_replicas"]
+      },
+      {
+        "title": "Latency (p50, p95)",
+        "targets": ["task_duration_ms"]
+      },
+      {
+        "title": "Success/Fail Rate",
+        "targets": ["task_status_total"]
+      },
+      {
+        "title": "GPU Utilization & Memory",
+        "targets": ["gpu_utilization_percent", "gpu_memory_gb"]
+      },
+      {
+        "title": "DLQ Count",
+        "targets": ["dlq_message_count"]
+      }
+    ]
+  }
+}
+

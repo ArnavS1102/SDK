@@ -1,0 +1,19 @@
+{{- if .Values.keda.enabled }}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "worker-chart.fullname" . }}-scaler
+spec:
+  scaleTargetRef:
+    name: {{ include "worker-chart.fullname" . }}
+  minReplicaCount: {{ .Values.keda.minReplicaCount }}
+  maxReplicaCount: {{ .Values.keda.maxReplicaCount }}
+  cooldownPeriod: {{ .Values.keda.cooldownPeriod }}
+  triggers:
+  - type: aws-sqs-queue
+    metadata:
+      queueURL: {{ .Values.queues.input }}
+      queueLength: "{{ .Values.keda.targetValue }}"
+      awsRegion: us-east-1
+{{- end }}
+

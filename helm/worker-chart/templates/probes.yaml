@@ -1,0 +1,4 @@
+# Readiness: models + deps reachable
+# Liveness: heartbeat check
+# Add to deployment container spec as needed
+

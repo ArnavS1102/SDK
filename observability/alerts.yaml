@@ -1,0 +1,17 @@
+alerts:
+  - name: BacklogStuck
+    condition: sqs_backlog > 100 for 10m
+    severity: warning
+    
+  - name: DLQMessages
+    condition: dlq_count > 0
+    severity: critical
+    
+  - name: CrashLoops
+    condition: pod_restarts > 3 in 5m
+    severity: critical
+    
+  - name: GPUOutOfMemory
+    condition: gpu_memory_used > 0.95 * gpu_memory_total
+    severity: warning
+

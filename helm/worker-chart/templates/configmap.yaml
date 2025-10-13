@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "worker-chart.fullname" . }}-config
+data:
+  QUEUE_URL: {{ .Values.queues.input | quote }}
+  NEXT_QUEUE_URL: {{ .Values.queues.next | quote }}
+  {{- range .Values.env }}
+  {{ .name }}: {{ .value | quote }}
+  {{- end }}
+
