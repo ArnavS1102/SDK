@@ -2,6 +2,28 @@
 
 **Purpose**: Run parallel ML pipelines where each step autoscales based on SQS backlog.
 
+---
+
+## 📋 Development Status
+
+### ✅ Developed & Tested
+- **`constants.py`** - Enums, message schema, file extension mappings (foundation layer)
+- **`contracts.py`** - Message validation (19 functions, 100% tested via `test_contracts.py`)
+- **`io_storage.py`** - S3/R2 file operations (11 functions, 100% tested via `test_storage.py`)
+  - Tested: path helpers, head, exists, get_bytes (with 50MB cap), get_json, put_bytes (single-part + multipart), put_json, delete, security checks
+
+### 🚧 To Be Developed
+- **`config.py`** - Configuration loader (env + YAML merging) - TODO
+- **`io_sqs.py`** - SQS queue operations - TODO  
+- **`io_db.py`** - Database operations (task/job tracking) - TODO
+- **`hooks.py`** - Service interface definition - TODO
+- **`runner.py`** - Main worker loop - TODO
+- **`util_idempotency.py`** - Duplicate work detection - TODO
+- **`util_timeouts.py`** - Lease heartbeats - TODO
+- **`util_logging.py`** - Structured logging - TODO
+
+---
+
 ## What Goes In
 SQS message:
 ```json
@@ -51,21 +73,124 @@ def publish_next(ctx, msg, outputs):
 
 ---
 
+## What Each File Does (Junior Dev Guide)
+
+### 📦 Core Types & Validation
+- **`constants.py`** - All types, enums, and constants in one place
+  - TaskMessage schema, status enums, step types
+  - Extension → MIME type mappings (single source of truth)
+  
+- **`contracts.py`** - The gatekeeper: validates every incoming message
+  - Rejects bad messages BEFORE they waste GPU time
+  - Checks all fields, validates URIs, enforces storage patterns
+  - You call `validate_message()` once - it does everything
+
+### 💾 I/O Operations
+- **`io_storage.py`** - Read from / write to S3/R2
+  - Download inputs: `get_bytes()`, `get_json()`
+  - Upload outputs: `put_bytes()`, `put_json()` with atomic writes
+  - Enforces sandbox (can't write outside your prefix)
+  - Handles big files smartly (>8MB uses multipart, >50MB rejected)
+
+- **`io_sqs.py`** - Talk to SQS queues (TODO: develop)
+  - Receive messages (long-poll)
+  - Publish to next queue (fan-out)
+  - ACK completed work, extend visibility for long tasks
+
+- **`io_db.py`** - Track task/job status in database (TODO: develop)
+  - Claim task (atomic lease)
+  - Update status (QUEUED → PROCESSING → DONE)
+  - Mark jobs complete when all tasks finish
+
+### 🎯 Service Interface
+- **`hooks.py`** - The 3 functions YOU write per service (TODO: develop)
+  - `load_pipeline()` - Load model once (GPU warm-up)
+  - `process()` - Do the actual work (your ML logic)
+  - `publish_next()` - Create messages for next step (fan-out)
+
+### 🔄 Worker Engine
+- **`runner.py`** - The main loop (TODO: develop)
+  - Long-poll SQS → validate → check idempotency → claim task
+  - Call your hooks → write outputs → update DB → ACK
+  - You never edit this - it's the engine
+
+### ⚙️ Config & Utils
+- **`config.py`** - Load settings from env + YAML (TODO: develop)
+  - Queue URLs, bucket names, DB connection
+  - Service-specific params (model configs, thresholds)
+
+- **`util_idempotency.py`** - Skip duplicate work (TODO: develop)
+  - Check if result already exists → skip and ACK
+  - Saves GPU $$$ on retries
+
+- **`util_timeouts.py`** - Keep tasks alive (TODO: develop)
+  - Heartbeat the DB lease (renew every 30s)
+  - Extend SQS visibility (prevent message bounce)
+
+- **`util_logging.py`** - Structured JSON logs (TODO: develop)
+  - Standard fields: job_id, task_id, latency_ms, trace_id
+  - Makes debugging and dashboards easy
+
+---
+
+## 📦 What Each Module Does
+
+### Core SDK (`/python/worker_sdk/`)
+
+**Foundation Layer:**
+- **`constants.py`** - Type definitions, enums, and constants (TaskMessage, statuses, file extensions)
+  - *Junior dev*: All the building blocks - what a message looks like, what statuses exist, what files we accept
+
+**Validation Layer:**
+- **`contracts.py`** - Message contract enforcement
+  - *Junior dev*: The gatekeeper - checks every message is valid before wasting GPU time. Blocks bad formats, wrong paths, malicious files
+
+**I/O Layer:**
+- **`io_storage.py`** - S3/R2 file operations
+  - *Junior dev*: Your file manager - downloads inputs, uploads outputs, makes sure you can't write outside your folder
+- **`io_sqs.py`** - Queue operations (TODO)
+  - *Junior dev*: Gets work from queue, sends results to next queue - this is what triggers autoscaling
+- **`io_db.py`** - Database operations (TODO)
+  - *Junior dev*: Tracks task status (QUEUED→PROCESSING→DONE), prevents two workers from doing same task
+
+**Configuration:**
+- **`config.py`** - Config loader (TODO)
+  - *Junior dev*: Reads settings from environment vars and YAML files - queue URLs, bucket names, model configs
+
+**Service Interface:**
+- **`hooks.py`** - What you implement in each service (TODO)
+  - *Junior dev*: The 3 functions YOU write: load_pipeline (load model), process (do work), publish_next (fan-out)
+
+**Orchestration:**
+- **`runner.py`** - Main worker loop (TODO)
+  - *Junior dev*: The engine - pulls from queue, validates, calls your hooks, writes outputs, updates DB, ACKs message
+
+**Utilities:**
+- **`util_idempotency.py`** - Duplicate detection (TODO)
+  - *Junior dev*: Checks if you already did this work (result exists?) - skips re-running expensive models on retries
+- **`util_timeouts.py`** - Lease management (TODO)
+  - *Junior dev*: Tells DB "I'm still working" so another worker doesn't steal your task mid-processing
+- **`util_logging.py`** - Structured logs (TODO)
+  - *Junior dev*: Consistent JSON logs with job_id, task_id, timing - makes debugging across 100s of pods possible
+
+---
+
 ## Repository Structure
 
 ```
 /python/worker_sdk/       # Core SDK (don't edit in services)
   __init__.py             # Package entry
-  runner.py               # Main loop: SQS → validate → hooks → output → DB → ACK
-  hooks.py                # Interface you implement: load_pipeline, process, publish_next
-  contracts.py            # Message schema validation
-  config.py               # Loads env + YAML (queues, models, etc.)
-  io_storage.py           # S3/R2 read/write (enforces output_prefix rule)
-  io_sqs.py               # SQS client: receive, publish, extend visibility
-  io_db.py                # Task DB: atomic claim, status updates
-  util_idempotency.py     # Skip duplicate work if result.* exists
-  util_timeouts.py        # Heartbeat lease, extend SQS visibility
-  util_logging.py         # Structured JSON logs
+  constants.py            # ✅ Types, enums, constants
+  contracts.py            # ✅ Message validation
+  io_storage.py           # ✅ S3/R2 operations
+  config.py               # 🚧 Loads env + YAML (queues, models, etc.)
+  io_sqs.py               # 🚧 SQS client: receive, publish, extend visibility
+  io_db.py                # 🚧 Task DB: atomic claim, status updates
+  hooks.py                # 🚧 Interface you implement: load_pipeline, process, publish_next
+  runner.py               # 🚧 Main loop: SQS → validate → hooks → output → DB → ACK
+  util_idempotency.py     # 🚧 Skip duplicate work if result.* exists
+  util_timeouts.py        # 🚧 Heartbeat lease, extend SQS visibility
+  util_logging.py         # 🚧 Structured JSON logs
 
 /python/pyproject.toml    # Pip package metadata
 /python/README.md         # Install + usage guide
