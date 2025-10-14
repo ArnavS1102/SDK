@@ -8,142 +8,33 @@ CONTRACT INVARIANTS (every service must obey):
 3. Workers MUST produce: result.(json|png|mp4|etc) + metrics.json
 4. Idempotency rule: if result.* exists under output_prefix → skip work and ACK
 5. Fan-out tasks MUST set parent_task_id to source task for traceability
+
+NOTE: This file focuses ONLY on validation. Helper functions like message_to_dict(),
+build_output_prefix(), etc. have TODOs to move to their proper modules (io_sqs.py,
+io_storage.py) when those modules are implemented.
 """
 
 from typing import Dict, Any, List, Optional
-from dataclasses import dataclass, field
 import re
+import json
+
+# Import types and constants from constants.py (relative import)
+from .constants import (
+    TaskMessage,
+    SUPPORTED_SCHEMAS,
+    VALID_STEPS,
+    VALID_TASK_STATUSES,
+    VALID_JOB_STATUSES,
+    REQUIRED_MESSAGE_FIELDS,
+    SUPPORTED_FILE_EXTENSIONS,
+    StepType,
+    TaskStatus,
+    JobStatus,
+)
 
 
 # ============================================================================
-# MESSAGE SCHEMA
-# ============================================================================
-
-@dataclass
-class TaskMessage:
-    """
-    The standard message format.
-    Every SQS message must deserialize into this.
-    
-    Required envelope fields ensure safe routing, ownership, versioning, and storage.
-    """
-    # Core identity
-    job_id: str              # Pipeline run ID (from API gateway)
-    task_id: str             # Unique task ID (deterministic for retries)
-    user_id: str             # Owner (for auth + scoping)
-    
-    # Routing & versioning
-    schema: str              # Message format version (e.g., "v1")
-    step: str                # Which service: DETECTION | ANALYSIS | COMPLETION
-    
-    # I/O
-    input_uri: str           # Where to read input (s3://...)
-    output_prefix: str       # Where to write outputs (enforced pattern)
-    params: Dict[str, Any]   # Step-specific parameters
-    
-    # Traceability (optional but strongly recommended)
-    trace_id: Optional[str] = None         # For distributed tracing
-    parent_task_id: Optional[str] = None   # MANDATORY for fan-out tasks
-    
-    # Retry metadata
-    retry_count: int = 0     # Attempt number (SQS ApproximateReceiveCount)
-
-
-# Required fields - message rejected if any missing
-REQUIRED_MESSAGE_FIELDS = [
-    "job_id",
-    "task_id",
-    "user_id",
-    "schema",
-    "step",
-    "input_uri",
-    "output_prefix",
-    "params"
-]
-
-
-# ============================================================================
-# SCHEMA VERSION
-# ============================================================================
-
-# Supported message schema versions
-SUPPORTED_SCHEMAS = {'v1'}
-
-
-# ============================================================================
-# STEP ENUM
-# ============================================================================
-
-class StepType:
-    """
-    Valid pipeline steps.
-    Add new steps here as you expand the pipeline.
-    """
-    DETECTION = "DETECTION"
-    ANALYSIS = "ANALYSIS"
-    COMPLETION = "COMPLETION"
-    # Add more as needed: PREPROCESSING, POSTPROCESSING, etc.
-
-
-VALID_STEPS = [
-    StepType.DETECTION,
-    StepType.ANALYSIS,
-    StepType.COMPLETION
-]
-
-
-# ============================================================================
-# STATUS ENUMS
-# ============================================================================
-
-class TaskStatus:
-    """
-    Valid task states in DB.
-    Lifecycle: QUEUED → PROCESSING → DONE/FAILED/SKIPPED
-    STALE = lease expired, reaper will reclaim
-    """
-    QUEUED = "QUEUED"           # Initial state
-    PROCESSING = "PROCESSING"   # Claimed by worker
-    DONE = "DONE"              # Success
-    FAILED = "FAILED"          # Error
-    SKIPPED = "SKIPPED"        # Idempotency skip
-    STALE = "STALE"            # Lease expired, needs reclaim
-    CANCELLED = "CANCELLED"    # User-initiated abort
-
-
-class JobStatus:
-    """
-    Valid job states in DB.
-    Lifecycle: QUEUED → PROCESSING → DONE/FAILED/CANCELLED
-    """
-    QUEUED = "QUEUED"           # Initial state
-    PROCESSING = "PROCESSING"   # At least one task running
-    DONE = "DONE"              # All tasks complete
-    FAILED = "FAILED"          # Unrecoverable error
-    CANCELLED = "CANCELLED"    # User aborted
-
-
-VALID_TASK_STATUSES = [
-    TaskStatus.QUEUED,
-    TaskStatus.PROCESSING,
-    TaskStatus.DONE,
-    TaskStatus.FAILED,
-    TaskStatus.SKIPPED,
-    TaskStatus.STALE,
-    TaskStatus.CANCELLED
-]
-
-VALID_JOB_STATUSES = [
-    JobStatus.QUEUED,
-    JobStatus.PROCESSING,
-    JobStatus.DONE,
-    JobStatus.FAILED,
-    JobStatus.CANCELLED
-]
-
-
-# ============================================================================
-# VALIDATION FUNCTIONS
+# CORE VALIDATION FUNCTIONS (contracts.py focus)
 # ============================================================================
 
 def validate_message(raw_message: Dict[str, Any], bucket_allowlist: List[str]) -> TaskMessage:
@@ -238,7 +129,13 @@ def validate_message(raw_message: Dict[str, Any], bucket_allowlist: List[str]) -
     if not validate_input_uri(input_uri, bucket_allowlist):
         raise ValueError(f"Invalid input_uri: {input_uri}")
     
-    if not validate_output_prefix(output_prefix, bucket_allowlist[0] if bucket_allowlist else "unknown", job_id, step, task_id):
+    # Extract bucket from output_prefix to validate
+    try:
+        prefix_bucket = output_prefix.split("://", 1)[1].split("/", 1)[0] if "://" in output_prefix else ""
+    except (IndexError, ValueError):
+        prefix_bucket = ""
+    
+    if not validate_output_prefix(output_prefix, prefix_bucket, job_id, step, task_id):
         raise ValueError(f"Invalid output_prefix: {output_prefix}")
     
     if not validate_params(params):
@@ -304,6 +201,23 @@ def validate_input_uri(uri: str, bucket_allowlist: List[str]) -> bool:
     """
     Junior dev: Check the input file path is safe and accessible.
     
+    S3 Bucket Primer:
+    - A bucket is like a top-level folder in cloud storage (AWS S3 or Cloudflare R2)
+    - Format: s3://<bucket-name>/<path>/<to>/<file.jpg>
+    - The bucket is "my-uploads-bucket" in: s3://my-uploads-bucket/user123/photo.jpg
+    
+    Typical Setup (NOT per-user buckets):
+    - One "uploads" bucket: where API gateway writes user uploads
+    - One "work" bucket: where workers write their outputs
+    - Users are separated by path INSIDE the bucket (not separate buckets)
+    
+    Example URIs:
+    - s3://my-uploads-bucket/user_789/input.jpg       ← bucket = "my-uploads-bucket"
+    - s3://my-work-bucket/jobs/abc123/result.png      ← bucket = "my-work-bucket"
+    - r2://cdn-bucket/public/thumbnail.jpg            ← bucket = "cdn-bucket" (Cloudflare R2)
+    
+    Why allowlist? So workers can't read from random buckets (security).
+    
     Checks:
     - Starts with s3:// or r2:// (enforced scheme)
     - Bucket is in allowlist (e.g., only "uploads" or "work" buckets)
@@ -313,7 +227,7 @@ def validate_input_uri(uri: str, bucket_allowlist: List[str]) -> bool:
     
     Args:
         uri: Input S3/R2 URI
-        bucket_allowlist: Allowed bucket names
+        bucket_allowlist: Allowed bucket names (e.g., ["my-uploads-bucket", "my-work-bucket"])
         
     Returns:
         True if valid, False otherwise
@@ -362,6 +276,41 @@ def validate_output_prefix(output_prefix: str, bucket: str, job_id: str, step: s
     
     MUST match EXACT pattern: s3://<bucket>/work/<job_id>/<step>/<task_id>/
     
+    Storage Layout Example:
+    
+    s3://my-work-bucket/                              ← ONE shared bucket for all work
+      work/                                           ← All jobs live under /work/
+        abc123-def456/                                ← Job ID (one per pipeline run)
+          DETECTION/                                  ← Step name
+            abc123-def456-detection-000/              ← Task ID (unique per task)
+              result.json                             ← Output files
+              metrics.json
+          ANALYSIS/
+            abc123-def456-detection-000-analysis-001/ ← Child task
+              result.json
+              metrics.json
+    
+    Why this pattern?
+    1. Isolation: Each task gets its own folder
+    2. Traceability: Path shows job → step → task hierarchy
+    3. Security: Worker can't write outside its task folder
+    4. Cleanup: Delete entire job folder when done
+    
+    Real example with fan-out:
+    - Job starts: job_id = "a1b2c3d4"
+    
+    - Detection (runs ONCE):
+      s3://my-work-bucket/work/a1b2c3d4/DETECTION/a1b2c3d4-detection-000/
+      → Finds 3 objects in image
+      → Creates 3 analysis tasks (fan-out)
+    
+    - Analysis (3 tasks, one per detection):
+      s3://my-work-bucket/work/a1b2c3d4/ANALYSIS/a1b2c3d4-detection-000-analysis-000/
+      s3://my-work-bucket/work/a1b2c3d4/ANALYSIS/a1b2c3d4-detection-000-analysis-001/
+      s3://my-work-bucket/work/a1b2c3d4/ANALYSIS/a1b2c3d4-detection-000-analysis-002/
+      
+    So: 1 detection task → 3 analysis tasks → 3 completion tasks (if needed)
+    
     Checks:
     - Starts with s3://<bucket>/work/
     - Contains job_id from message (not a different job)
@@ -374,7 +323,7 @@ def validate_output_prefix(output_prefix: str, bucket: str, job_id: str, step: s
     
     Args:
         output_prefix: Where task wants to write
-        bucket: Expected bucket from config
+        bucket: Expected bucket from config (e.g., "my-work-bucket")
         job_id: Job ID from message
         step: Step from message
         task_id: Task ID from message
@@ -421,7 +370,6 @@ def validate_params(params: Dict[str, Any], max_size_bytes: int = 65536, max_dep
     Returns:
         True if valid, False otherwise
     """
-    import json
     
     if not isinstance(params, dict):
         return False
@@ -514,10 +462,16 @@ def validate_task_id(task_id: str) -> bool:
     Junior dev: Check task_id is well-formed.
     Format is typically: {job_id}-{step}-{item_number}
     
-    Examples:
-    - First task:  "a1b2c3d4-detection-000"
-    - Child task:  "a1b2c3d4-detection-000-analysis-003"
-    - Deep child:  "a1b2c3d4-detection-000-analysis-003-completion-000"
+    Examples (showing fan-out numbering):
+    - Detection (runs once):  "a1b2c3d4-detection-000"
+      ↓ Finds 3 objects, creates 3 analysis tasks
+    - Analysis task 1:        "a1b2c3d4-detection-000-analysis-000"
+    - Analysis task 2:        "a1b2c3d4-detection-000-analysis-001"
+    - Analysis task 3:        "a1b2c3d4-detection-000-analysis-002"
+      ↓ Each creates a completion task
+    - Completion task 1:      "a1b2c3d4-detection-000-analysis-000-completion-000"
+    
+    The numbers (000, 001, 002) represent items in the fan-out, NOT retries.
     
     Regex: ^[a-zA-Z0-9_-]+$
     Length: 1-256 chars (longer than job_id because it includes hierarchy)
@@ -602,43 +556,19 @@ def validate_parent_task_id(parent_task_id: Optional[str], is_fanout: bool) -> b
 
 
 # ============================================================================
-# SCHEMA HELPERS
+# BACKWARDS COMPATIBILITY - Re-export functions from their proper modules
+# ============================================================================
+# These functions have been moved to their proper modules but are re-exported
+# here for backwards compatibility. Import from their proper modules instead:
+#   - message_to_dict: import from io_sqs
+#   - build_output_prefix, extract_job_id_from_prefix: import from io_storage
 # ============================================================================
 
-def message_to_dict(message: TaskMessage, preserve_unknown: bool = True) -> Dict[str, Any]:
-    """
-    Junior dev: Turn a TaskMessage back into a dict so we can send it to the next queue.
-    
-    Important: If preserve_unknown=True, keep any extra fields from the original message
-    that we don't know about. This lets newer services add fields without breaking old ones.
-    
-    Args:
-        message: TaskMessage object
-        preserve_unknown: Keep fields not in TaskMessage schema (forward-compat)
-        
-    Returns:
-        Dict ready for json.dumps() and SQS publish
-    """
-    result = {
-        "job_id": message.job_id,
-        "task_id": message.task_id,
-        "user_id": message.user_id,
-        "schema": message.schema,
-        "step": message.step,
-        "input_uri": message.input_uri,
-        "output_prefix": message.output_prefix,
-        "params": message.params,
-        "retry_count": message.retry_count,
-    }
-    
-    # Add optional fields only if set
-    if message.trace_id is not None:
-        result["trace_id"] = message.trace_id
-    
-    if message.parent_task_id is not None:
-        result["parent_task_id"] = message.parent_task_id
-    
-    return result
+# Re-export from io_sqs
+from .io_sqs import message_to_dict
+
+# Re-export from io_storage
+from .io_storage import build_output_prefix, extract_job_id_from_prefix
 
 
 def dict_to_message(data: Dict[str, Any], bucket_allowlist: List[str]) -> TaskMessage:
@@ -658,69 +588,6 @@ def dict_to_message(data: Dict[str, Any], bucket_allowlist: List[str]) -> TaskMe
     """
     # validate_message does all the heavy lifting
     return validate_message(data, bucket_allowlist)
-
-
-def build_output_prefix(bucket: str, job_id: str, step: str, task_id: str) -> str:
-    """
-    Junior dev: Helper to construct a valid output_prefix that matches the contract.
-    Use this when creating new tasks in publish_next.
-    
-    Pattern: s3://<bucket>/work/<job_id>/<step>/<task_id>/
-    
-    Args:
-        bucket: Bucket name
-        job_id: Job ID
-        step: Step name
-        task_id: Task ID
-        
-    Returns:
-        Properly formatted output_prefix
-    """
-    return f"s3://{bucket}/work/{job_id}/{step}/{task_id}/"
-
-
-def extract_job_id_from_prefix(output_prefix: str) -> Optional[str]:
-    """
-    Junior dev: Parse the job_id out of an output_prefix path.
-    Used to verify job_id in path matches job_id in message.
-    
-    Args:
-        output_prefix: Output prefix path
-        
-    Returns:
-        job_id if found, None if path doesn't match pattern
-    """
-    if not output_prefix or not isinstance(output_prefix, str):
-        return None
-    
-    # Expected pattern: s3://<bucket>/work/<job_id>/<step>/<task_id>/
-    if not output_prefix.startswith("s3://"):
-        return None
-    
-    try:
-        # Remove s3:// and split by /
-        # Example: s3://bucket/work/job123/DETECTION/task-001/
-        # After removing s3://: bucket/work/job123/DETECTION/task-001/
-        path = output_prefix[5:]  # Remove "s3://"
-        parts = path.split("/")
-        
-        # parts should be: [bucket, work, job_id, step, task_id, '']
-        if len(parts) < 4:
-            return None
-        
-        # Check that parts[1] is 'work'
-        if parts[1] != "work":
-            return None
-        
-        # job_id is at index 2
-        job_id = parts[2]
-        
-        if not job_id:
-            return None
-        
-        return job_id
-    except (IndexError, ValueError):
-        return None
 
 
 def is_fanout_task(message: TaskMessage) -> bool:
@@ -751,4 +618,4 @@ def get_supported_file_extensions() -> List[str]:
     Returns:
         List of safe extensions: ['.png', '.jpg', '.jpeg', '.mp4', '.json']
     """
-    return ['.png', '.jpg', '.jpeg', '.mp4', '.json']
+    return SUPPORTED_FILE_EXTENSIONS
