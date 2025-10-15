@@ -45,6 +45,7 @@ def main():
     hooks_path = os.environ.get("HOOKS_PATH", "service.hooks.ServiceHooks")
     region = os.environ.get("AWS_REGION")
     log_level = os.environ.get("LOG_LEVEL", "INFO")
+    next_queue_url = os.environ.get("NEXT_QUEUE_URL")
     
     # --- Initialize logger ---
     logger = get_logger("runner", level=log_level)
@@ -61,7 +62,7 @@ def main():
     
     # --- Build context ---
     ctx = Ctx(
-        config={"work_bucket": work_bucket, "queue_url": queue_url},
+        config={"work_bucket": work_bucket, "queue_url": queue_url, "next_queue_url": next_queue_url},
         storage=storage,
         sqs=sqs_client.sqs,  # Pass underlying boto3 client for compatibility
         db=db,
