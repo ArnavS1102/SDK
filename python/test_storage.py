@@ -3,7 +3,7 @@
 End-to-end tests for S3 I/O utils against a real S3 bucket.
 
 Covers:
-- build_output_prefix, extract_job_id_from_prefix
+- build_output_prefix (from io_sqs), extract_job_id_from_prefix (from io_storage)
 - head, exists
 - get_bytes (success and >50MB failure)
 - put_bytes (single-part + multipart branches)
@@ -25,8 +25,8 @@ from typing import Callable
 
 # >>> UPDATE THIS IMPORT TO YOUR MODULE <<<
 # from mypackage.s3io import *
+from worker_sdk.io_sqs import build_output_prefix  # noqa: E402
 from worker_sdk.io_storage import (  # noqa: E402
-    build_output_prefix,
     extract_job_id_from_prefix,
     head,
     exists,

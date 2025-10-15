@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 import time
 import uuid
 from contextlib import contextmanager
@@ -23,7 +24,7 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
-from .constants import TaskMessage
+from .constants import TaskMessage, VALID_STEPS
 
 
 # ============================================================================
@@ -338,6 +339,40 @@ def visibility_heartbeat(
 # ============================================================================
 # PUBLISHING (fan-out to next step)
 # ============================================================================
+
+def build_output_prefix(bucket: str, job_id: str, step: str, task_id: str) -> str:
+    """
+    Build canonical output_prefix: s3://<bucket>/work/<job_id>/<step>/<task_id>/
+    Validates bucket, job_id, task_id format and step enum. Normalizes step to uppercase.
+    """
+    if not all([bucket, job_id, step, task_id]):
+        raise ValueError("All parameters required: bucket, job_id, step, task_id")
+    
+    bucket = bucket.strip().strip('/')
+    job_id = job_id.strip().strip('/')
+    step = step.strip().strip('/').upper()
+    task_id = task_id.strip().strip('/')
+    
+    # Validate bucket (S3 rules: 3-63 chars, lowercase, digits, dots, hyphens)
+    if not re.match(r'^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$', bucket):
+        raise ValueError(f"Invalid bucket name: {bucket}")
+    
+    # Validate job_id and task_id
+    if not re.match(r'^[a-zA-Z0-9_-]{1,128}$', job_id):
+        raise ValueError(f"Invalid job_id: {job_id}")
+    if not re.match(r'^[a-zA-Z0-9_-]{1,256}$', task_id):
+        raise ValueError(f"Invalid task_id: {task_id}")
+    
+    # Validate step against enum
+    if step not in VALID_STEPS:
+        raise ValueError(f"Invalid step: {step}. Must be one of {VALID_STEPS}")
+    
+    # Block path traversal
+    if '..' in bucket or '..' in job_id or '..' in step or '..' in task_id:
+        raise ValueError("Path traversal not allowed")
+    
+    return f"s3://{bucket}/work/{job_id}/{step}/{task_id}/"
+
 
 def message_to_dict(message: TaskMessage, preserve_unknown: bool = True) -> TaskDict:
     """Convert TaskMessage to dict (strict JSON validation)."""
