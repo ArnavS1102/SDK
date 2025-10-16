@@ -30,33 +30,6 @@ class TaskMessage:
     parent_task_id: Optional[str] = None
 
 
-class StepType:
-    """Step type constants."""
-    DETECTION = "DETECTION"
-    ANALYSIS = "ANALYSIS"
-    COMPLETION = "COMPLETION"
-    # YAML-based steps (dynamically loaded later)
-
-
-class TaskStatus:
-    """Task status constants."""
-    QUEUED = "QUEUED"
-    PROCESSING = "PROCESSING"
-    DONE = "DONE"
-    FAILED = "FAILED"
-    SKIPPED = "SKIPPED"
-    STALE = "STALE"
-
-
-class JobStatus:
-    """Job status constants."""
-    QUEUED = "QUEUED"
-    PROCESSING = "PROCESSING"
-    DONE = "DONE"
-    FAILED = "FAILED"
-    CANCELLED = "CANCELLED"
-
-
 # Message validation constants
 SUPPORTED_SCHEMAS = {"v1"}
 REQUIRED_MESSAGE_FIELDS = [
@@ -78,17 +51,6 @@ EXTENSION_MIME_TYPES = {
 
 SUPPORTED_FILE_EXTENSIONS = list(EXTENSION_MIME_TYPES.keys())
 
-# Task/Job status lists
-VALID_TASK_STATUSES = [
-    TaskStatus.QUEUED, TaskStatus.PROCESSING, TaskStatus.DONE,
-    TaskStatus.FAILED, TaskStatus.SKIPPED, TaskStatus.STALE
-]
-
-VALID_JOB_STATUSES = [
-    JobStatus.QUEUED, JobStatus.PROCESSING, JobStatus.DONE,
-    JobStatus.FAILED, JobStatus.CANCELLED
-]
-
 # ============================================================================
 # CONFIG LOADING
 # ============================================================================
@@ -96,10 +58,10 @@ VALID_JOB_STATUSES = [
 def load_config(path: str = None) -> Dict[str, Any]:
     """Load YAML config once and cache it."""
     if path is None:
-        # default to CONFIG_PATH env or ./config.yaml
-        path = os.environ.get("CONFIG_PATH", os.path.join(os.path.dirname(__file__), "config.yaml"))
+        # default to CONFIG_PATH env or ./config/default.yaml
+        path = os.environ.get("CONFIG_PATH", os.path.join(os.path.dirname(__file__), "config", "default.yaml"))
     if not os.path.exists(path):
-        raise FileNotFoundError(f"Missing config.yaml at {path}")
+        raise FileNotFoundError(f"Missing config file at {path}")
     with open(path, "r") as f:
         return yaml.safe_load(f)
 

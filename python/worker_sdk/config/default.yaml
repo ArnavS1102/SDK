@@ -1,9 +1,9 @@
 # config.yaml
 
 aws:
-  account_id: "123456789012"
+  account_id: "581867121448"
   region: "us-east-1"
-  work_bucket: "my-work-bucket"
+  work_bucket: "my-s3io-tests"
 
 queues:
   script:  "ytbot-dev-video-script-requested"

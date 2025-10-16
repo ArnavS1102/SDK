@@ -107,7 +107,18 @@ def _process(storage: S3Storage, sqs_client: SQSClient, raw_msg: Dict[str, Any],
 
     try:
         task_dict, receipt, receive_count = sqs_client.parse_message(raw_msg)
-        validated = validate_message(task_dict, bucket_allowlist=[WORK_BUCKET])
+        
+        # Validate message schema
+        try:
+            validated = validate_message(task_dict, bucket_allowlist=[WORK_BUCKET])
+        except (ValueError, TypeError) as e:
+            # Invalid message - delete it to stop retries
+            logger.error(f"Invalid message (deleting): {e}", {
+                "task_id": task_dict.get("task_id", "unknown"),
+                "error": str(e)
+            })
+            sqs_client.delete_message(queue_url, receipt)
+            return
 
         job_id = validated.job_id
         task_id = validated.task_id
