@@ -56,10 +56,10 @@ SUPPORTED_FILE_EXTENSIONS = list(EXTENSION_MIME_TYPES.keys())
 # ============================================================================
 
 def load_config(path: str = None) -> Dict[str, Any]:
-    """Load YAML config once and cache it."""
+    """Load YAML config once and cache it. Always uses config/default.yaml."""
     if path is None:
-        # default to CONFIG_PATH env or ./config/default.yaml
-        path = os.environ.get("CONFIG_PATH", os.path.join(os.path.dirname(__file__), "config", "default.yaml"))
+        # Always use config/default.yaml (no env var override)
+        path = os.path.join(os.path.dirname(__file__), "config", "default.yaml")
     if not os.path.exists(path):
         raise FileNotFoundError(f"Missing config file at {path}")
     with open(path, "r") as f:
