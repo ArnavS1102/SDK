@@ -34,7 +34,7 @@ from .constants import (
 
 
 # ============================================================================
-# CORE VALIDATION FUNCTIONS (contracts.py focus)
+# CORE VALIDATION FUNCTIONS (message.py focus)
 # ============================================================================
 
 def validate_message(raw_message: Dict[str, Any], bucket_allowlist: List[str]) -> TaskMessage:
@@ -561,14 +561,14 @@ def validate_parent_task_id(parent_task_id: Optional[str], is_fanout: bool) -> b
 # These functions have been moved to their proper modules but are re-exported
 # here for backwards compatibility. Import from their proper modules instead:
 #   - message_to_dict, build_output_prefix: import from io_sqs
-#   - extract_job_id_from_prefix: import from io_storage
+#   - extract_job_id_from_prefix: import from io_s3
 # ============================================================================
 
 # Re-export from io_sqs
 from .io_sqs import message_to_dict, build_output_prefix
 
-# Re-export from io_storage
-from .io_storage import extract_job_id_from_prefix
+# Re-export from io_s3
+from .io_s3 import extract_job_id_from_prefix
 
 
 def dict_to_message(data: Dict[str, Any], bucket_allowlist: List[str]) -> TaskMessage:

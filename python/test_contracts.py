@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Quick test script for contracts.py validation functions.
+Quick test script for message.py validation functions.
 Run: python test_contracts.py
 
 NOTE: This is a TEST file - it imports individual functions to test them in isolation.
 
 In PRODUCTION code (runner.py, hooks.py, etc.), you would ONLY import:
-    from worker_sdk.contracts import validate_message, dict_to_message, TaskMessage
+    from worker_sdk.message import validate_message, dict_to_message, TaskMessage
     
 The individual validators (validate_user_id, validate_job_id, etc.) are INTERNAL
 helpers that validate_message() calls. You never call them directly in production.
@@ -18,7 +18,7 @@ import sys
 sys.path.insert(0, 'worker_sdk')
 
 # In tests, we import everything to test each function individually
-from worker_sdk.contracts import (
+from worker_sdk.message import (
     validate_message,           # Main entry point (used in production)
     validate_schema_version,    # Internal helper (tested here)
     validate_step,              # Internal helper (tested here)

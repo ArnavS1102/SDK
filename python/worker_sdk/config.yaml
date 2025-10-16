@@ -1,0 +1,46 @@
+# config.yaml
+
+aws:
+  account_id: "581867121448"
+  region: "us-east-1"
+  work_bucket: "my-s3io-tests"
+
+queues:
+  script:  "ytbot-dev-video-script-requested"
+  image:   "ytbot-dev-video-image-requested"
+  animate: "ytbot-dev-video-animate-requested"
+  tts:     "ytbot-dev-video-tts-requested"
+  stitch:  "ytbot-dev-video-stitch-requested"
+  dlq:     "ytbot-dev-video-dlq"
+
+steps:
+  SCRIPT_GENERATION:
+    filetype: "json"
+    extensions: [".json"]
+    next:
+      - IMAGE_GENERATION
+      - SPEECH_GENERATION
+    queue: "script"
+
+  IMAGE_GENERATION:
+    filetype: "png"
+    extensions: [".png", ".json"]
+    next:
+      - VIDEO_GENERATION
+    queue: "image"
+
+  VIDEO_GENERATION:
+    filetype: "mp4"
+    extensions: [".mp4", ".json"]
+    join_to: "STITCH"
+    queue: "animate"
+
+  SPEECH_GENERATION:
+    filetype: "mp3"
+    extensions: [".mp3", ".wav", ".json"]
+    queue: "tts"
+
+  STITCH:
+    filetype: "mp4"
+    extensions: [".mp4", ".json"]
+    queue: "stitch"

@@ -1,190 +1,174 @@
 """
-Constants, enums, and types used across the SDK.
+constants.py – dynamic version
+Loads all step, queue, and filetype definitions from config.yaml
+Also defines core types and enums for message validation.
 """
 
-from typing import Dict, Any, Optional
+import os
+import yaml
 from dataclasses import dataclass
+from typing import Dict, Any, List, Optional
 
 
 # ============================================================================
-# MESSAGE SCHEMA
+# CORE TYPES (for message validation)
 # ============================================================================
 
 @dataclass
 class TaskMessage:
-    """
-    The standard message format.
-    Every SQS message must deserialize into this.
-    
-    Required envelope fields ensure safe routing, ownership, versioning, and storage.
-    """
-    # Core identity
-    job_id: str              # Pipeline run ID (from API gateway)
-    task_id: str             # Unique task ID (deterministic for retries)
-    user_id: str             # Owner (for auth + scoping)
-    
-    # Routing & versioning
-    schema: str              # Message format version (e.g., "v1")
-    step: str                # Which service: DETECTION | ANALYSIS | COMPLETION
-    
-    # I/O
-    input_uri: str           # Where to read input (s3://...)
-    output_prefix: str       # Where to write outputs (enforced pattern)
-    params: Dict[str, Any]   # Step-specific parameters
-    
-    # Traceability (optional but strongly recommended)
-    trace_id: Optional[str] = None         # For distributed tracing
-    parent_task_id: Optional[str] = None   # MANDATORY for fan-out tasks
-    
-    # Retry metadata
-    retry_count: int = 0     # Attempt number (SQS ApproximateReceiveCount)
+    """Validated task message structure."""
+    job_id: str
+    task_id: str
+    user_id: str
+    schema: str
+    step: str
+    input_uri: str
+    output_prefix: str
+    params: Dict[str, Any]
+    retry_count: int = 0
+    trace_id: Optional[str] = None
+    parent_task_id: Optional[str] = None
 
-
-# ============================================================================
-# SCHEMA VERSION
-# ============================================================================
-
-# Supported message schema versions
-SUPPORTED_SCHEMAS = {'v1'}
-
-
-# ============================================================================
-# STEP ENUM
-# ============================================================================
 
 class StepType:
-    """
-    Valid pipeline steps.
-    Add new steps here as you expand the pipeline.
-    """
+    """Step type constants."""
     DETECTION = "DETECTION"
     ANALYSIS = "ANALYSIS"
     COMPLETION = "COMPLETION"
-    # Add more as needed: PREPROCESSING, POSTPROCESSING, etc.
+    # YAML-based steps (dynamically loaded later)
 
-
-VALID_STEPS = [
-    StepType.DETECTION,
-    StepType.ANALYSIS,
-    StepType.COMPLETION
-]
-
-
-# ============================================================================
-# STATUS ENUMS
-# ============================================================================
 
 class TaskStatus:
-    """
-    Valid task states in DB.
-    Lifecycle: QUEUED → PROCESSING → DONE/FAILED/SKIPPED
-    STALE = lease expired, reaper will reclaim
-    """
-    QUEUED = "QUEUED"           # Initial state
-    PROCESSING = "PROCESSING"   # Claimed by worker
-    DONE = "DONE"              # Success
-    FAILED = "FAILED"          # Error
-    SKIPPED = "SKIPPED"        # Idempotency skip
-    STALE = "STALE"            # Lease expired, needs reclaim
-    CANCELLED = "CANCELLED"    # User-initiated abort
+    """Task status constants."""
+    QUEUED = "QUEUED"
+    PROCESSING = "PROCESSING"
+    DONE = "DONE"
+    FAILED = "FAILED"
+    SKIPPED = "SKIPPED"
+    STALE = "STALE"
 
 
 class JobStatus:
-    """
-    Valid job states in DB.
-    Lifecycle: QUEUED → PROCESSING → DONE/FAILED/CANCELLED
-    """
-    QUEUED = "QUEUED"           # Initial state
-    PROCESSING = "PROCESSING"   # At least one task running
-    DONE = "DONE"              # All tasks complete
-    FAILED = "FAILED"          # Unrecoverable error
-    CANCELLED = "CANCELLED"    # User aborted
+    """Job status constants."""
+    QUEUED = "QUEUED"
+    PROCESSING = "PROCESSING"
+    DONE = "DONE"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
 
 
+# Message validation constants
+SUPPORTED_SCHEMAS = {"v1"}
+REQUIRED_MESSAGE_FIELDS = [
+    "job_id", "task_id", "user_id", "schema", "step",
+    "input_uri", "output_prefix", "params"
+]
+
+# File extension mappings
+EXTENSION_MIME_TYPES = {
+    ".json": "application/json",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".mp4": "video/mp4",
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".txt": "text/plain",
+}
+
+SUPPORTED_FILE_EXTENSIONS = list(EXTENSION_MIME_TYPES.keys())
+
+# Task/Job status lists
 VALID_TASK_STATUSES = [
-    TaskStatus.QUEUED,
-    TaskStatus.PROCESSING,
-    TaskStatus.DONE,
-    TaskStatus.FAILED,
-    TaskStatus.SKIPPED,
-    TaskStatus.STALE,
-    TaskStatus.CANCELLED
+    TaskStatus.QUEUED, TaskStatus.PROCESSING, TaskStatus.DONE,
+    TaskStatus.FAILED, TaskStatus.SKIPPED, TaskStatus.STALE
 ]
 
 VALID_JOB_STATUSES = [
-    JobStatus.QUEUED,
-    JobStatus.PROCESSING,
-    JobStatus.DONE,
-    JobStatus.FAILED,
-    JobStatus.CANCELLED
+    JobStatus.QUEUED, JobStatus.PROCESSING, JobStatus.DONE,
+    JobStatus.FAILED, JobStatus.CANCELLED
 ]
 
-
 # ============================================================================
-# MESSAGE FIELDS
-# ============================================================================
-
-# Required fields - message rejected if any missing
-REQUIRED_MESSAGE_FIELDS = [
-    "job_id",
-    "task_id",
-    "user_id",
-    "schema",
-    "step",
-    "input_uri",
-    "output_prefix",
-    "params"
-]
-
-
-# ============================================================================
-# FILE EXTENSIONS & MIME TYPES
+# CONFIG LOADING
 # ============================================================================
 
-# Extension to MIME type mapping (single source of truth)
-EXTENSION_MIME_TYPES = {
-    # Images
-    '.png':  'image/png',
-    '.jpg':  'image/jpeg',
-    '.jpeg': 'image/jpeg',
-    '.webp': 'image/webp',
-    '.gif':  'image/gif',
-    '.tif':  'image/tiff',
-    '.tiff': 'image/tiff',
-    '.bmp':  'image/bmp',
-    '.svg':  'image/svg+xml',
-    
-    # Videos
-    '.mp4':  'video/mp4',
-    '.mov':  'video/quicktime',
-    '.webm': 'video/webm',
-    '.mkv':  'video/x-matroska',
-    '.avi':  'video/x-msvideo',
-    
-    # Audio
-    '.mp3':  'audio/mpeg',
-    '.wav':  'audio/wav',
-    '.m4a':  'audio/mp4',
-    '.aac':  'audio/aac',
-    '.ogg':  'audio/ogg',
-    '.flac': 'audio/flac',
-    '.opus': 'audio/opus',
-    
-    # Documents
-    '.pdf':  'application/pdf',
-    '.json': 'application/json',
-    '.csv':  'text/csv',
-    '.tsv':  'text/tab-separated-values',
-    '.txt':  'text/plain',
-    '.md':   'text/markdown',
-    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    '.xls':  'application/vnd.ms-excel',
-    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    '.doc':  'application/msword',
-    '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-    '.ppt':  'application/vnd.ms-powerpoint',
-}
+def load_config(path: str = None) -> Dict[str, Any]:
+    """Load YAML config once and cache it."""
+    if path is None:
+        # default to CONFIG_PATH env or ./config.yaml
+        path = os.environ.get("CONFIG_PATH", os.path.join(os.path.dirname(__file__), "config.yaml"))
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Missing config.yaml at {path}")
+    with open(path, "r") as f:
+        return yaml.safe_load(f)
 
-# Allowed input file extensions (derived from mapping keys)
-SUPPORTED_FILE_EXTENSIONS = list(EXTENSION_MIME_TYPES.keys())
+CONFIG = load_config()
 
+AWS_ACCOUNT_ID = CONFIG["aws"]["account_id"]
+AWS_REGION = CONFIG["aws"]["region"]
+WORK_BUCKET = CONFIG["aws"]["work_bucket"]
+
+# ============================================================================
+# STEPS / QUEUES (YAML-based)
+# ============================================================================
+
+STEPS = CONFIG["steps"]
+QUEUE_NAMES = CONFIG["queues"]
+
+# Dynamic VALID_STEPS (loaded from YAML)
+VALID_STEPS = list(STEPS.keys())
+
+def build_sqs_url(queue_name: str) -> str:
+    """Construct SQS URL from queue name + account + region."""
+    return f"https://sqs.{AWS_REGION}.amazonaws.com/{AWS_ACCOUNT_ID}/{queue_name}"
+
+# Map step → full SQS URL
+QUEUE_URLS: Dict[str, str] = {}
+for step_name, step_def in STEPS.items():
+    q_key = step_def.get("queue")
+    if q_key and q_key in QUEUE_NAMES:
+        QUEUE_URLS[step_name] = build_sqs_url(QUEUE_NAMES[q_key])
+
+# Add DLQ
+DLQ_URL = build_sqs_url(QUEUE_NAMES.get("dlq", "ytbot-dev-video-dlq"))
+
+# ============================================================================
+# DYNAMIC STEP INFO ACCESSORS
+# ============================================================================
+
+def get_step_names() -> List[str]:
+    return list(STEPS.keys())
+
+def get_next_steps(step: str) -> List[str]:
+    return STEPS.get(step, {}).get("next", [])
+
+def get_join_step(step: str) -> str:
+    return STEPS.get(step, {}).get("join_to")
+
+def get_allowed_extensions(step: str) -> List[str]:
+    return STEPS.get(step, {}).get("extensions", [])
+
+def get_primary_filetype(step: str) -> str:
+    return STEPS.get(step, {}).get("filetype", "json")
+
+def get_queue_url(step: str) -> str:
+    return QUEUE_URLS.get(step)
+
+# ============================================================================
+# ID / PREFIX HELPERS
+# ============================================================================
+
+def make_output_prefix(job_id: str, step: str, task_id: str) -> str:
+    """Standard S3 prefix convention."""
+    return f"s3://{WORK_BUCKET}/work/{job_id}/{step}/{task_id}/"
+
+# ============================================================================
+# EXAMPLE USAGE
+# ============================================================================
+
+if __name__ == "__main__":
+    print("Loaded config for steps:", get_step_names())
+    print("Queue URLs:", QUEUE_URLS)
+    for step in get_step_names():
+        print(f"{step} → next: {get_next_steps(step)} join_to: {get_join_step(step)}")

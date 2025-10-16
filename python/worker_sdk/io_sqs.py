@@ -83,7 +83,7 @@ class SQSClient:
                 "sqs",
                 region_name=self._region,
                 config=Config(
-                    retries={"max_attempts": 6, "mode": "standard"},
+                    retries={"max_attempts": 6},
                     read_timeout=70,     # > 20s long-poll
                     connect_timeout=3,
                 ),
@@ -677,7 +677,7 @@ def get_sqs_client(region: Optional[str] = None):
         "sqs",
         region_name=region,
         config=Config(
-            retries={"max_attempts": 6, "mode": "standard"},
+            retries={"max_attempts": 6},
             read_timeout=70,
             connect_timeout=3,
         ),
