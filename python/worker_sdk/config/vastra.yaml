@@ -8,12 +8,13 @@ aws:
 queues:
   segmentation:  "svastra-dev-video-segmentation-requested"
   analysis:   "svastra-dev-video-analysis-requested"
-
+  dlq:     "svastra-dev-video-dlq"
 
 steps:
   SEGMENTATION:
     filetype: "png"
-    extensions: [".json"]
+    extensions: [".png"]
+    hooks_path: "services.cloth_segmentation.hooks.Hooks"
     next:
       - ANALYSIS
     queue: "segmentation"
@@ -21,4 +22,5 @@ steps:
   ANALYSIS:
     filetype: "json"
     extensions: [".json"]
+    hooks_path: "services.cloth_analysis.hooks.Hooks"
     queue: "analysis"

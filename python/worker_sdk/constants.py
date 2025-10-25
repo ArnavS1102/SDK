@@ -134,6 +134,10 @@ def get_primary_filetype(step: str) -> str:
 def get_queue_url(step: str) -> str:
     return QUEUE_URLS.get(step)
 
+def get_hooks_path(step: str) -> Optional[str]:
+    """Get the hooks class path for a step, or None if not defined."""
+    return STEPS.get(step, {}).get("hooks_path")
+
 # ============================================================================
 # ID / PREFIX HELPERS
 # ============================================================================
