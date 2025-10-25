@@ -1,7 +1,0 @@
-apiVersion: v2
-name: worker-chart
-description: Generic worker deployment with KEDA autoscaling
-type: application
-version: 0.1.0
-appVersion: "1.0"
-
