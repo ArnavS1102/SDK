@@ -1,4 +1,3 @@
-import os
 import sys
 import time
 import json
@@ -10,6 +9,7 @@ from .constants import (
     get_queue_url,
     get_next_steps,
     get_primary_filetype,
+    get_hooks_path,
     make_output_prefix,
 )
 from .io_s3 import S3Storage, ensure_within_prefix, guess_content_type
@@ -38,8 +38,10 @@ def _get_primary_name(step: str) -> str:
     return PRIMARY_BY_FILETYPE.get(ftype, "result.json")
 
 
-def _det_task_id(step: str, index: int) -> str:
+def _det_task_id(step: str, index: int, explicit_idx: int = None) -> str:
     """Generate simple readable task IDs like S1, I2, V3."""
+    if explicit_idx is not None:
+        return f"{step[0].upper()}{explicit_idx + 1}"
     return f"{step[0].upper()}{index + 1}"
 
 
@@ -47,21 +49,30 @@ def _det_task_id(step: str, index: int) -> str:
 # Core Runner Logic
 # ==========================================================
 
-def main():
-    """Main entry point for the worker."""
-    step = os.environ.get("STEP")
+def main(step: str, log_level: str = "INFO", hooks_path: str = None):
+    """
+    Main entry point for the worker.
+    
+    Args:
+        step: Processing step name (e.g., "IMAGE_GENERATION")
+        log_level: Logging level (default: "INFO")
+        hooks_path: Optional override for hooks class path (default: from config)
+    """
     if not step:
-        raise RuntimeError("Missing STEP environment variable")
+        raise RuntimeError("step parameter is required")
 
-    hooks_path = os.environ.get("HOOKS_PATH", "service.hooks.ServiceHooks")
-    log_level = os.environ.get("LOG_LEVEL", "INFO")
-
+    # Get hooks path from config if not provided
+    if not hooks_path:
+        hooks_path = get_hooks_path(step)
+    if not hooks_path:
+        raise RuntimeError(f"No hooks_path defined for step={step} in config")
+    
     queue_url = get_queue_url(step)
     if not queue_url:
         raise RuntimeError(f"No queue URL found for step={step}")
 
     logger = get_logger("runner", level=log_level)
-    logger.info("Starting worker", {"step": step, "queue_url": queue_url})
+    logger.info("Starting worker", {"step": step, "queue_url": queue_url, "hooks_path": hooks_path})
 
     # Initialize I/O adapters
     storage = S3Storage()
@@ -151,32 +162,56 @@ def _process(storage: S3Storage, sqs_client: SQSClient, raw_msg: Dict[str, Any],
 # ==========================================================
 
 def _write_outputs(storage: S3Storage, prefix: str, step: str, outputs: Dict[str, Any]):
-    """Write model outputs (metrics, result, aux)."""
+    """Write model outputs - handles bytes, list[bytes], dict, list[dict]."""
     if not prefix.startswith("s3://"):
         raise ValueError(f"Invalid S3 prefix: {prefix}")
 
     primary_name = _get_primary_name(step)
-
+    
     # Write metrics
     if "metrics" in outputs and isinstance(outputs["metrics"], dict):
         storage.put_json(prefix, "metrics.json", outputs["metrics"])
-
-    # Write result
+    
     result = outputs.get("result")
-    if result is not None:
-        if isinstance(result, dict):
-            storage.put_json(prefix, primary_name, result)
-        elif isinstance(result, bytes):
-            storage.put_bytes(prefix, primary_name, result, content_type=guess_content_type(primary_name))
-        else:
-            raise TypeError(f"Unsupported result type: {type(result)}")
-
+    
+    # Handle different result types
+    if result is None:
+        pass  # No result to write
+    
+    elif isinstance(result, bytes):
+        # Single binary file
+        storage.put_bytes(prefix, primary_name, result, 
+                         content_type=guess_content_type(primary_name))
+    
+    elif isinstance(result, dict):
+        # Single JSON result
+        storage.put_json(prefix, primary_name, result)
+    
+    elif isinstance(result, list):
+        # Multiple results (list of bytes or list of dicts)
+        for idx, item in enumerate(result):
+            if isinstance(item, bytes):
+                # Multiple binaries: result_0.png, result_1.png, ...
+                import os
+                ext = os.path.splitext(primary_name)[1]
+                name = f"result_{idx}{ext}"
+                storage.put_bytes(prefix, name, item,
+                                content_type=guess_content_type(name))
+            elif isinstance(item, dict):
+                # Multiple JSONs: result_0.json, result_1.json, ...
+                storage.put_json(prefix, f"result_{idx}.json", item)
+            else:
+                raise TypeError(f"Unsupported list item type: {type(item)}")
+    else:
+        raise TypeError(f"Unsupported result type: {type(result)}")
+    
     # Write auxiliary data
     aux = outputs.get("aux", {})
     for name, data in aux.items():
         ensure_within_prefix(prefix, name)
         if isinstance(data, bytes):
-            storage.put_bytes(prefix, name, data, content_type=guess_content_type(name))
+            storage.put_bytes(prefix, name, data, 
+                            content_type=guess_content_type(name))
         elif isinstance(data, dict):
             storage.put_json(prefix, name, data)
 
@@ -187,20 +222,51 @@ def _write_outputs(storage: S3Storage, prefix: str, step: str, outputs: Dict[str
 
 def _emit_children(storage: S3Storage, sqs_client: SQSClient,
                    parent_task, outputs: Dict[str, Any], step: str):
-    """Emit fan-out messages for next steps (from YAML config)."""
+    """
+    Emit fan-out messages using explicit 'children' list from hooks.
+    
+    Hooks return:
+    {
+        "result": <any type>,
+        "metrics": {...},
+        "children": [          # Optional - data for child tasks
+            {...},             # Each becomes params for a child task
+            {...}
+        ]
+    }
+    """
     next_steps = get_next_steps(step)
     if not next_steps:
         return
-
+    
+    # Get explicit children list from hooks
+    children = outputs.get("children")
+    
+    # No children = no fan-out (totally fine for final steps)
+    if not children:
+        return
+    
+    # Validate children is a non-empty list
+    if not isinstance(children, list) or not children:
+        return
+    
     for next_step in next_steps:
-        items = outputs.get("result", {}).get("scenes", [])
         messages: List[Dict[str, Any]] = []
-
-        # Sequential IDs (I1, I2, etc.)
-        for idx, item in enumerate(items):
-            child_task_id = _det_task_id(next_step, idx)
+        
+        # Each child becomes a separate task
+        for idx, child_data in enumerate(children):
+            # Use explicit idx if provided, otherwise use enumerate idx
+            explicit_idx = child_data.get("idx") if isinstance(child_data, dict) else None
+            child_task_id = _det_task_id(next_step, idx, explicit_idx)
             child_prefix = make_output_prefix(parent_task.job_id, next_step, child_task_id)
-
+            
+            # Convert child_data to params dict
+            if isinstance(child_data, dict):
+                params = child_data
+            else:
+                # Wrap non-dict data
+                params = {"data": child_data, "index": idx}
+            
             msg = {
                 "job_id": parent_task.job_id,
                 "task_id": child_task_id,
@@ -209,15 +275,16 @@ def _emit_children(storage: S3Storage, sqs_client: SQSClient,
                 "step": next_step,
                 "input_uri": parent_task.output_prefix + _get_primary_name(step),
                 "output_prefix": child_prefix,
-                "params": {"index": idx, "scene": item},
+                "params": params,
                 "parent_task_id": parent_task.task_id,
                 "trace_id": parent_task.trace_id,
                 "retry_count": 0,
             }
             messages.append(msg)
-
+        
+        # Send in batches of 10
         next_q = get_queue_url(next_step)
-        if next_q:
+        if next_q and messages:
             for i in range(0, len(messages), 10):
                 sqs_client.send_messages_batch(next_q, messages[i:i + 10])
 
@@ -227,4 +294,13 @@ def _emit_children(storage: S3Storage, sqs_client: SQSClient,
 # ==========================================================
 
 if __name__ == "__main__":
-    main()
+    import sys
+    if len(sys.argv) < 2:
+        print("Usage: python -m worker_sdk.runner <STEP> [LOG_LEVEL]")
+        print("Example: python -m worker_sdk.runner IMAGE_GENERATION DEBUG")
+        sys.exit(1)
+    
+    step_arg = sys.argv[1]
+    log_level_arg = sys.argv[2] if len(sys.argv) > 2 else "INFO"
+    
+    main(step=step_arg, log_level=log_level_arg)
