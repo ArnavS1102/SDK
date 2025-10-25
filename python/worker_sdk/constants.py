@@ -56,10 +56,27 @@ SUPPORTED_FILE_EXTENSIONS = list(EXTENSION_MIME_TYPES.keys())
 # ============================================================================
 
 def load_config(path: str = None) -> Dict[str, Any]:
-    """Load YAML config once and cache it. Always uses config/default.yaml."""
+    """Load YAML config with environment variable override.
+    
+    Config selection priority:
+    1. Explicit path parameter
+    2. WORKER_CONFIG environment variable
+    3. Default to 'default.yaml'
+    
+    Environment Variable:
+        WORKER_CONFIG: Name of config file (without .yaml extension)
+        Examples: WORKER_CONFIG=vastra -> loads config/vastra.yaml
+                  WORKER_CONFIG=production -> loads config/production.yaml
+    
+    Examples:
+        export WORKER_CONFIG=vastra
+        python worker.py  # Uses config/vastra.yaml
+    """
     if path is None:
-        # Always use config/default.yaml (no env var override)
-        path = os.path.join(os.path.dirname(__file__), "config", "default.yaml")
+        # Use environment-based config name
+        config_name = os.environ.get("WORKER_CONFIG", "default")
+        path = os.path.join(os.path.dirname(__file__), "config", f"{config_name}.yaml")
+    
     if not os.path.exists(path):
         raise FileNotFoundError(f"Missing config file at {path}")
     with open(path, "r") as f:

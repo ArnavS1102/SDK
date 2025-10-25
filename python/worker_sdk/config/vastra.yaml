@@ -1,0 +1,24 @@
+# config.yaml
+
+aws:
+  account_id: "581867121448"
+  region: "us-east-1"
+  work_bucket: "videos-dev-svastra"
+
+queues:
+  segmentation:  "svastra-dev-video-segmentation-requested"
+  analysis:   "svastra-dev-video-analysis-requested"
+
+
+steps:
+  SEGMENTATION:
+    filetype: "png"
+    extensions: [".json"]
+    next:
+      - ANALYSIS
+    queue: "segmentation"
+
+  ANALYSIS:
+    filetype: "json"
+    extensions: [".json"]
+    queue: "analysis"

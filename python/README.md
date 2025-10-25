@@ -14,6 +14,30 @@ cd python && pip install -e .
 
 ---
 
+## Configuration
+
+The SDK supports multiple configuration files. Set the `WORKER_CONFIG` environment variable to choose which config to use:
+
+```bash
+# Use default configuration
+python worker.py  # Uses config/default.yaml
+
+# Use vastra configuration  
+export WORKER_CONFIG=vastra
+python worker.py  # Uses config/vastra.yaml
+
+# Use production configuration
+export WORKER_CONFIG=production
+python worker.py  # Uses config/production.yaml
+```
+
+**Available configs:**
+- `default` → `config/default.yaml`
+- `vastra` → `config/vastra.yaml`
+- `ytbot` → `config/ytbot.yaml`
+
+---
+
 ## Usage
 
 ### 1. Implement 3 hooks in your service
