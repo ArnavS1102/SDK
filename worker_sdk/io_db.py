@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 try:
     import psycopg
-    from psycopg.pool import ConnectionPool
+    from psycopg_pool import ConnectionPool
 except Exception:  # pragma: no cover - import guard for environments without psycopg installed
     psycopg = None
     ConnectionPool = object  # type: ignore
@@ -158,6 +158,7 @@ class PostgresDB:
                 error_code      TEXT NULL,
                 error_message   TEXT NULL,
                 created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 started_at      TIMESTAMPTZ NULL,
                 finished_at     TIMESTAMPTZ NULL
             );
@@ -167,6 +168,18 @@ class PostgresDB:
             "CREATE INDEX IF NOT EXISTS idx_tasks_status_created ON tasks (status, created_at);",
             "CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks (parent_task_id);",
             "CREATE INDEX IF NOT EXISTS idx_tasks_output_prefix ON tasks (output_prefix);",
+            # Migration: Add updated_at column to tasks if it doesn't exist
+            """
+            DO $$ 
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns 
+                    WHERE table_name='tasks' AND column_name='updated_at'
+                ) THEN
+                    ALTER TABLE tasks ADD COLUMN updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+                END IF;
+            END $$;
+            """,
             """
             CREATE TABLE IF NOT EXISTS task_results (
                 task_id             TEXT PRIMARY KEY REFERENCES tasks(task_id) ON DELETE CASCADE,
