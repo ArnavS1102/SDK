@@ -53,7 +53,7 @@ def test_valid_message():
         "schema": "v1",
         "step": "DETECTION",
         "input_uri": "s3://uploads/input.jpg",
-        "output_prefix": "s3://work-bucket/work/abc123-def456/DETECTION/abc123-def456-detection-000/",
+        "output_prefix": "s3://work-bucket/user_789/abc123-def456/DETECTION/abc123-def456-detection-000/",
         "params": {"threshold": 0.5, "model": "yolo"},
         "trace_id": "4bf92f3577b34da6",
         "parent_task_id": None,
@@ -80,7 +80,7 @@ def test_invalid_messages():
         "schema": "v1",
         "step": "DETECTION",
         "input_uri": "s3://uploads/input.jpg",
-        "output_prefix": "s3://work-bucket/work/abc123/DETECTION/abc123-detection-000/",
+        "output_prefix": "s3://work-bucket/user_123/abc123/DETECTION/abc123-detection-000/",
         "params": {},
     }
     
@@ -92,7 +92,7 @@ def test_invalid_messages():
         ("Path traversal", {**base_msg, "input_uri": "s3://uploads/../etc/passwd"}, "Invalid input_uri"),
         ("Bad extension", {**base_msg, "input_uri": "s3://uploads/virus.exe"}, "Invalid input_uri"),
         ("Wrong output_prefix", {**base_msg, "output_prefix": "s3://wrong/path/"}, "Invalid output_prefix"),
-        ("No trailing slash", {**base_msg, "output_prefix": "s3://work-bucket/work/abc123/DETECTION/abc123-detection-000"}, "Invalid output_prefix"),
+        ("No trailing slash", {**base_msg, "output_prefix": "s3://work-bucket/user_123/abc123/DETECTION/abc123-detection-000"}, "Invalid output_prefix"),
     ]
     
     passed = 0
@@ -193,8 +193,8 @@ def test_helpers():
     print("\n✓ Testing helper functions...")
     
     # Test build_output_prefix
-    prefix = build_output_prefix("my-bucket", "job123", "DETECTION", "task-001")
-    expected = "s3://my-bucket/work/job123/DETECTION/task-001/"
+    prefix = build_output_prefix("my-bucket", "user1", "job123", "DETECTION", "task-001")
+    expected = "s3://my-bucket/user1/job123/DETECTION/task-001/"
     if prefix == expected:
         print(f"  ✓ build_output_prefix")
     else:
@@ -239,12 +239,12 @@ def test_helpers():
     # Test is_fanout_task
     msg_root = TaskMessage(
         job_id="job123", task_id="t1", user_id="u1", schema="v1", step="DETECTION",
-        input_uri="s3://uploads/f.jpg", output_prefix="s3://work-bucket/work/job123/DETECTION/t1/",
+        input_uri="s3://uploads/f.jpg", output_prefix="s3://work-bucket/u1/job123/DETECTION/t1/",
         params={}, parent_task_id=None
     )
     msg_child = TaskMessage(
         job_id="job123", task_id="t2", user_id="u1", schema="v1", step="ANALYSIS",
-        input_uri="s3://uploads/f.jpg", output_prefix="s3://work-bucket/work/job123/ANALYSIS/t2/",
+        input_uri="s3://uploads/f.jpg", output_prefix="s3://work-bucket/u1/job123/ANALYSIS/t2/",
         params={}, parent_task_id="t1"
     )
     

@@ -3,11 +3,12 @@
 aws:
   account_id: "581867121448"
   region: "us-east-1"
-  work_bucket: "videos-dev-svastra"
+  work_bucket: "vastra"
 
 queues:
   segmentation:  "svastra-dev-video-segmentation-requested"
   analysis:   "svastra-dev-video-analysis-requested"
+  identification: "svastra-dev-video-identification-requested"
   dlq:     "svastra-dev-video-dlq"
 
 steps:
@@ -24,3 +25,11 @@ steps:
     extensions: [".json"]
     hooks_path: "services.cloth_analysis.hooks.Hooks"
     queue: "analysis"
+
+  ENHANCEMENT:
+    filetype: "png"
+    extensions: [".png"]
+    hooks_path: "services.face_blur.hooks.Hooks"
+    next:
+      - SEGMENTATION
+    queue: "identification"

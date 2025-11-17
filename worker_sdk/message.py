@@ -3,7 +3,7 @@ Message & status schema validation.
 Defines the contract every message must follow.
 
 CONTRACT INVARIANTS (every service must obey):
-1. output_prefix ALWAYS includes: s3://<bucket>/work/<job_id>/<step>/<task_id>/
+1. output_prefix ALWAYS includes: s3://<bucket>/<user_id>/<job_id>/<step>/<task_id>/
 2. Workers write ONLY inside output_prefix
 3. Workers MUST produce: result.(json|png|mp4|etc) + metrics.json
 4. Idempotency rule: if result.* exists under output_prefix → skip work and ACK
@@ -44,7 +44,7 @@ def validate_message(raw_message: Dict[str, Any], bucket_allowlist: List[str]) -
     - validate_schema_version() - ensure we support this version
     - validate_step() - check against VALID_STEPS
     - validate_input_uri() - scheme + bucket allowlist + safe extensions
-    - validate_output_prefix() - enforce pattern + match job_id/step/task_id
+    - validate_output_prefix() - enforce pattern + match user_id/job_id/step/task_id
     - validate_params() - size + depth + JSON types
     - validate_parent_task_id() - required for fan-out tasks
     - validate_trace_id() - optional field format
@@ -130,7 +130,7 @@ def validate_message(raw_message: Dict[str, Any], bucket_allowlist: List[str]) -
     except (IndexError, ValueError):
         prefix_bucket = ""
     
-    if not validate_output_prefix(output_prefix, prefix_bucket, job_id, step, task_id):
+    if not validate_output_prefix(output_prefix, prefix_bucket, user_id, job_id, step, task_id):
         raise ValueError(f"Invalid output_prefix: {output_prefix}")
     
     if not validate_params(params):
@@ -265,11 +265,11 @@ def validate_input_uri(uri: str, bucket_allowlist: List[str]) -> bool:
     return True
 
 
-def validate_output_prefix(output_prefix: str, bucket: str, job_id: str, step: str, task_id: str) -> bool:
+def validate_output_prefix(output_prefix: str, bucket: str, user_id: str, job_id: str, step: str, task_id: str) -> bool:
     """
     Junior dev: This is CRITICAL. Enforces the storage contract.
     
-    MUST match EXACT pattern: s3://<bucket>/work/<job_id>/<step>/<task_id>/
+    MUST match EXACT pattern: s3://<bucket>/<user_id>/<job_id>/<step>/<task_id>/
     
     Storage Layout Example:
     
@@ -295,19 +295,19 @@ def validate_output_prefix(output_prefix: str, bucket: str, job_id: str, step: s
     - Job starts: job_id = "a1b2c3d4"
     
     - Detection (runs ONCE):
-      s3://my-work-bucket/work/a1b2c3d4/DETECTION/a1b2c3d4-detection-000/
+      s3://my-work-bucket/user_789/a1b2c3d4/DETECTION/a1b2c3d4-detection-000/
       → Finds 3 objects in image
       → Creates 3 analysis tasks (fan-out)
     
     - Analysis (3 tasks, one per detection):
-      s3://my-work-bucket/work/a1b2c3d4/ANALYSIS/a1b2c3d4-detection-000-analysis-000/
-      s3://my-work-bucket/work/a1b2c3d4/ANALYSIS/a1b2c3d4-detection-000-analysis-001/
-      s3://my-work-bucket/work/a1b2c3d4/ANALYSIS/a1b2c3d4-detection-000-analysis-002/
+      s3://my-work-bucket/user_789/a1b2c3d4/ANALYSIS/a1b2c3d4-detection-000-analysis-000/
+      s3://my-work-bucket/user_789/a1b2c3d4/ANALYSIS/a1b2c3d4-detection-000-analysis-001/
+      s3://my-work-bucket/user_789/a1b2c3d4/ANALYSIS/a1b2c3d4-detection-000-analysis-002/
       
     So: 1 detection task → 3 analysis tasks → 3 completion tasks (if needed)
     
     Checks:
-    - Starts with s3://<bucket>/work/
+    - Starts with s3://<bucket>/<user_id>/
     - Contains job_id from message (not a different job)
     - Contains step from message (not a different step)
     - Contains task_id from message (not a different task)
@@ -319,6 +319,7 @@ def validate_output_prefix(output_prefix: str, bucket: str, job_id: str, step: s
     Args:
         output_prefix: Where task wants to write
         bucket: Expected bucket from config (e.g., "my-work-bucket")
+        user_id: User ID from message
         job_id: Job ID from message
         step: Step from message
         task_id: Task ID from message
@@ -338,7 +339,7 @@ def validate_output_prefix(output_prefix: str, bucket: str, job_id: str, step: s
         return False
     
     # Build expected pattern
-    expected = f"s3://{bucket}/work/{job_id}/{step}/{task_id}/"
+    expected = f"s3://{bucket}/{user_id}/{job_id}/{step}/{task_id}/"
     
     # Must match exactly
     if output_prefix != expected:

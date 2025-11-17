@@ -459,18 +459,21 @@ class SQSClient:
     # ------------------------------------------------------------------------
     
     @staticmethod
-    def build_output_prefix(bucket: str, job_id: str, step: str, task_id: str) -> str:
-        """Build canonical output_prefix: s3://<bucket>/work/<job_id>/<step>/<task_id>/"""
-        if not all([bucket, job_id, step, task_id]):
-            raise ValueError("All parameters required: bucket, job_id, step, task_id")
+    def build_output_prefix(bucket: str, user_id: str, job_id: str, step: str, task_id: str) -> str:
+        """Build canonical output_prefix: s3://<bucket>/<user_id>/<job_id>/<step>/<task_id>/"""
+        if not all([bucket, user_id, job_id, step, task_id]):
+            raise ValueError("All parameters required: bucket, user_id, job_id, step, task_id")
         
         bucket = bucket.strip().strip('/')
+        user_id = user_id.strip().strip('/')
         job_id = job_id.strip().strip('/')
         step = step.strip().strip('/').upper()
         task_id = task_id.strip().strip('/')
         
         if not re.match(r'^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$', bucket):
             raise ValueError(f"Invalid bucket name: {bucket}")
+        if not re.match(r'^[a-zA-Z0-9_-]{1,128}$', user_id):
+            raise ValueError(f"Invalid user_id: {user_id}")
         
         if not re.match(r'^[a-zA-Z0-9_-]{1,128}$', job_id):
             raise ValueError(f"Invalid job_id: {job_id}")
@@ -480,10 +483,10 @@ class SQSClient:
         if step not in VALID_STEPS:
             raise ValueError(f"Invalid step: {step}. Must be one of {VALID_STEPS}")
         
-        if '..' in bucket or '..' in job_id or '..' in step or '..' in task_id:
+        if '..' in bucket or '..' in user_id or '..' in job_id or '..' in step or '..' in task_id:
             raise ValueError("Path traversal not allowed")
         
-        return f"s3://{bucket}/work/{job_id}/{step}/{task_id}/"
+        return f"s3://{bucket}/{user_id}/{job_id}/{step}/{task_id}/"
     
     @staticmethod
     def message_to_dict(message: TaskMessage, preserve_unknown: bool = True) -> TaskDict:
@@ -776,9 +779,9 @@ def get_queue_stats(sqs, queue_url: str, include_extra: bool = False) -> Dict[st
     client = SQSClient(sqs_client=sqs)
     return client.get_queue_stats(queue_url, include_extra)
 
-def build_output_prefix(bucket: str, job_id: str, step: str, task_id: str) -> str:
+def build_output_prefix(bucket: str, user_id: str, job_id: str, step: str, task_id: str) -> str:
     """Build canonical output_prefix."""
-    return SQSClient.build_output_prefix(bucket, job_id, step, task_id)
+    return SQSClient.build_output_prefix(bucket, user_id, job_id, step, task_id)
 
 def message_to_dict(message: TaskMessage, preserve_unknown: bool = True) -> TaskDict:
     """Convert TaskMessage to dict."""

@@ -389,9 +389,20 @@ class S3Storage:
         if not output_prefix or not isinstance(output_prefix, str):
             return None
         
-        pattern = r'^s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/work/([a-zA-Z0-9_-]+)/[^/]+/[^/]+/?$'
+        # s3://bucket/user_id/job_id/step/task_id/
+        pattern = r'^s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/[a-zA-Z0-9_-]+/([a-zA-Z0-9_-]+)/[^/]+/[^/]+/?$'
         match = re.match(pattern, output_prefix)
         
+        return match.group(1) if match else None
+    
+    @staticmethod
+    def extract_user_id_from_prefix(output_prefix: str) -> Optional[str]:
+        """Parse user_id from output_prefix."""
+        if not output_prefix or not isinstance(output_prefix, str):
+            return None
+        # s3://bucket/user_id/job_id/step/task_id/
+        pattern = r'^s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/([a-zA-Z0-9_-]+)/[a-zA-Z0-9_-]+/[^/]+/[^/]+/?$'
+        match = re.match(pattern, output_prefix)
         return match.group(1) if match else None
     
     # ------------------------------------------------------------------------
@@ -586,6 +597,9 @@ def ensure_within_prefix(prefix: str, filename: str) -> str:
 def extract_job_id_from_prefix(output_prefix: str) -> Optional[str]:
     """Parse job_id from output_prefix."""
     return S3Storage.extract_job_id_from_prefix(output_prefix)
+def extract_user_id_from_prefix(output_prefix: str) -> Optional[str]:
+    """Parse user_id from output_prefix."""
+    return S3Storage.extract_user_id_from_prefix(output_prefix)
 
 
 # Public API
@@ -593,5 +607,5 @@ __all__ = [
     "S3Storage",
     "head", "exists", "get_bytes", "get_json",
     "put_bytes", "put_json", "delete",
-    "guess_content_type", "ensure_within_prefix", "extract_job_id_from_prefix",
+    "guess_content_type", "ensure_within_prefix", "extract_job_id_from_prefix", "extract_user_id_from_prefix",
 ]

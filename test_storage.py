@@ -62,11 +62,12 @@ def main():
     # --- Build a canonical output prefix ---
     job_id = f"job_{uuid.uuid4().hex[:8]}"
     task_id = f"task_{uuid.uuid4().hex[:8]}"
+    user_id = "user_test"
     step = "DETECTION"   # must be in VALID_STEPS (DETECTION, ANALYSIS, COMPLETION)
     try:
-        output_prefix = build_output_prefix(BUCKET, job_id, step, task_id)
+        output_prefix = build_output_prefix(BUCKET, user_id, job_id, step, task_id)
         _assert(output_prefix.endswith("/"), "output_prefix must end with '/'")
-        _assert(output_prefix.startswith(f"s3://{BUCKET}/work/{job_id}/{step}/"), "unexpected prefix shape")
+        _assert(output_prefix.startswith(f"s3://{BUCKET}/{user_id}/{job_id}/{step}/"), "unexpected prefix shape")
         _print_ok("build_output_prefix")
     except Exception as e:
         _print_fail("build_output_prefix", e); return 1
