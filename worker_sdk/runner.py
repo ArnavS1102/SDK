@@ -156,6 +156,11 @@ def _process(storage: S3Storage, sqs_client: SQSClient, raw_msg: Dict[str, Any],
                     trace_id=validated.trace_id,
                     attrs={},
                 )
+                # TODO: Update job status based on task lifecycle:
+                # - Set job to RUNNING when first task starts
+                # - Set job to SUCCEEDED when all tasks complete
+                # - Set job to FAILED if any task fails
+                # Need to query all tasks for a job to determine completion status
                 db.upsert_task(task=TaskRecord(
                     task_id=validated.task_id,
                     job_id=validated.job_id,

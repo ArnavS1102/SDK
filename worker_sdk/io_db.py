@@ -113,6 +113,23 @@ class PostgresDB:
 
     @staticmethod
     def _dsn_from_env(application_name: str) -> str:
+        # Check for DB_URL first (from .env or environment)
+        db_url = os.getenv("DB_URL")
+        if db_url:
+            # Use DB_URL directly - psycopg accepts both URL and key-value formats
+            # If it's a URL format, try to append application_name
+            if (db_url.startswith("postgresql://") or db_url.startswith("postgres://")) and "application_name" not in db_url:
+                separator = "&" if "?" in db_url else "?"
+                return f"{db_url}{separator}application_name={application_name}"
+            # For key-value format, append application_name to options if not present
+            elif "application_name" not in db_url:
+                if "options=" in db_url:
+                    return f"{db_url},application_name={application_name}"
+                else:
+                    return f"{db_url} options='-c application_name={application_name}'"
+            return db_url
+        
+        # Fall back to individual environment variables
         host = os.getenv("PGHOST", "127.0.0.1")
         port = os.getenv("PGPORT", "5432")
         user = os.getenv("PGUSER", "postgres")
