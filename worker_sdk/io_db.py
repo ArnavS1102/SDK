@@ -147,6 +147,24 @@ class PostgresDB:
         """
         ddl = [
             """
+            CREATE TABLE IF NOT EXISTS users (
+                user_id          TEXT PRIMARY KEY,
+                email            TEXT UNIQUE NOT NULL,
+                hashed_password  TEXT NOT NULL,
+                display_name     TEXT NULL,
+                created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);",
+            # TODO: Test users table creation and CRUD operations:
+            # - Verify table is created with correct schema
+            # - Test INSERT (create user)
+            # - Test SELECT (get user by user_id, get user by email)
+            # - Test UPDATE (update display_name, password)
+            # - Test UNIQUE constraint on email
+            # - Test foreign key relationships if we add FK from jobs/tasks to users
+            """
             CREATE TABLE IF NOT EXISTS jobs (
                 job_id          TEXT PRIMARY KEY,
                 user_id         TEXT NOT NULL,
