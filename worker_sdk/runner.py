@@ -1,7 +1,8 @@
 import sys
 import time
 import json
-from typing import Any, Dict, List
+import os
+from typing import Any, Dict, List, Optional
 
 from .constants import (
     CONFIG,
@@ -23,6 +24,62 @@ from .io_db import PostgresDB, TaskRecord
 # ==========================================================
 # Helpers
 # ==========================================================
+
+def _sanitize_filename(filename: str) -> Optional[str]:
+    """
+    Sanitize filename to prevent path traversal and invalid characters.
+    Returns None if filename is invalid.
+    """
+    if not filename or not isinstance(filename, str):
+        return None
+    
+    # Remove path separators and traversal attempts
+    filename = filename.replace('/', '').replace('\\', '')
+    if '..' in filename:
+        return None
+    
+    # Remove null bytes and other dangerous characters
+    filename = filename.replace('\x00', '')
+    if any(c in filename for c in [';', '|', '&', '$', '`']):
+        return None
+    
+    # Get just the basename (no directory components)
+    filename = os.path.basename(filename)
+    
+    # Ensure it's not empty and not just dots
+    if not filename or filename in ['.', '..']:
+        return None
+    
+    # Limit length (reasonable filename limit)
+    if len(filename) > 255:
+        return None
+    
+    return filename
+
+
+def _is_dict_of_bytes(d: Dict[str, Any]) -> bool:
+    """Check if dict contains only bytes values."""
+    if not d:
+        return False
+    return all(isinstance(v, bytes) for v in d.values())
+
+
+def _find_primary_result_key(d: Dict[str, Any]) -> Optional[str]:
+    """
+    Find the primary result key in a dict.
+    Prefers keys starting with 'result' (e.g., 'result.png', 'result.jpg').
+    Falls back to first key if no 'result' key found.
+    """
+    if not d:
+        return None
+    
+    # First, try to find a key starting with 'result'
+    for key in d.keys():
+        if isinstance(key, str) and key.lower().startswith('result'):
+            return key
+    
+    # Fall back to first key
+    return next(iter(d.keys()), None)
 
 PRIMARY_BY_FILETYPE = {
     "json": "result.json",
@@ -145,6 +202,8 @@ def _process(storage: S3Storage, sqs_client: SQSClient, raw_msg: Dict[str, Any],
         output_prefix = validated.output_prefix
         log = logger.bind(job_id=job_id, task_id=task_id, step=step)
 
+        log.info("Message validated, starting processing", {"input_uri": validated.input_uri, "output_prefix": output_prefix})
+
         # Persist job/task (best-effort)
         if db:
             try:
@@ -177,6 +236,7 @@ def _process(storage: S3Storage, sqs_client: SQSClient, raw_msg: Dict[str, Any],
                 log.warning("DB upsert failed (continuing)", {"error": str(e)})
 
         # Skip poison pill logic for simplicity
+        log.info("Checking if task already completed (idempotency check)...")
         if result_exists(storage, output_prefix):
             log.info("Skipped (already done - idempotent)")
             sqs_client.delete_message(queue_url, receipt)
@@ -225,7 +285,19 @@ def _process(storage: S3Storage, sqs_client: SQSClient, raw_msg: Dict[str, Any],
 # ==========================================================
 
 def _write_outputs(storage: S3Storage, prefix: str, step: str, outputs: Dict[str, Any], task_id: str = None) -> Dict[str, Any]:
-    """Write model outputs - handles bytes, list[bytes], dict, list[dict].
+    """Write model outputs - handles bytes, list[bytes], dict, list[dict], dict[bytes], list[dict[bytes]].
+    
+    Supported result types:
+    - bytes: Single binary file
+    - dict: JSON file (if values are not all bytes) or multiple files (if all values are bytes)
+    - list[bytes]: Multiple binary files in individual folders
+    - list[dict]: Multiple JSON files or multiple file sets in individual folders
+    - dict[bytes]: Multiple files with explicit filenames (keys are filenames, values are bytes)
+    - list[dict[bytes]]: Multiple file sets, each in its own folder
+    
+    For dict[bytes], keys are used as filenames (sanitized). Keys starting with 'result' 
+    are preferred as the primary result. Invalid filenames are skipped.
+    
     Returns basic result metadata for DB."""
     if not prefix.startswith("s3://"):
         raise ValueError(f"Invalid S3 prefix: {prefix}")
@@ -255,9 +327,45 @@ def _write_outputs(storage: S3Storage, prefix: str, step: str, outputs: Dict[str
         primary_size_bytes = len(result)
     
     elif isinstance(result, dict):
-        # Single JSON result
-        primary_result_uri = storage.put_json(prefix, primary_name, result)
-        primary_mime = guess_content_type(primary_name)
+        # Check if dict contains bytes values (multiple files) or JSON data
+        if _is_dict_of_bytes(result):
+            # Dict of bytes: save each key-value pair as a file
+            saved_files = {}
+            primary_key = _find_primary_result_key(result)
+            
+            for key, file_bytes in result.items():
+                sanitized_name = _sanitize_filename(key)
+                if sanitized_name is None:
+                    # Skip invalid filenames
+                    continue
+                
+                try:
+                    uri = storage.put_bytes(
+                        prefix, 
+                        sanitized_name, 
+                        file_bytes,
+                        content_type=guess_content_type(sanitized_name)
+                    )
+                    saved_files[sanitized_name] = uri
+                    
+                    # Track primary result URI
+                    if key == primary_key:
+                        primary_result_uri = uri
+                        primary_mime = guess_content_type(sanitized_name)
+                        primary_size_bytes = len(file_bytes)
+                except Exception:
+                    # Skip files that fail to save
+                    continue
+            
+            # If no primary was set, use first saved file
+            if primary_result_uri is None and saved_files:
+                first_file = next(iter(saved_files.items()))
+                primary_result_uri = first_file[1]
+                primary_mime = guess_content_type(first_file[0])
+        else:
+            # Single JSON result (current behavior)
+            primary_result_uri = storage.put_json(prefix, primary_name, result)
+            primary_mime = guess_content_type(primary_name)
     
     elif isinstance(result, list):
         # Multiple results - create individual task folders for each item
@@ -279,7 +387,7 @@ def _write_outputs(storage: S3Storage, prefix: str, step: str, outputs: Dict[str
                                     content_type=guess_content_type("result.png"))
                     extra_out[f"item_{idx}"] = {"result_uri": uri}
                 elif isinstance(item, dict):
-                    # Create individual task folder for this JSON item
+                    # Create individual task folder for this item
                     individual_task_id = f"{task_id}-{idx:03d}"
                     # Extract bucket, user_id and job_id from prefix: s3://bucket/user_id/job_id/step/task_id/
                     prefix_parts = prefix.split('/')
@@ -288,9 +396,43 @@ def _write_outputs(storage: S3Storage, prefix: str, step: str, outputs: Dict[str
                     job_id = prefix_parts[4]
                     individual_prefix = f"s3://{bucket}/{user_id}/{job_id}/{step}/{individual_task_id}/"
                     
-                    # Save as result.json in individual folder
-                    uri = storage.put_json(individual_prefix, "result.json", item)
-                    extra_out[f"item_{idx}"] = {"result_uri": uri}
+                    # Check if dict contains bytes values (multiple files) or JSON data
+                    if _is_dict_of_bytes(item):
+                        # Dict of bytes: save each key-value pair as a file in the individual folder
+                        saved_files = {}
+                        primary_key = _find_primary_result_key(item)
+                        primary_uri = None
+                        
+                        for key, file_bytes in item.items():
+                            sanitized_name = _sanitize_filename(key)
+                            if sanitized_name is None:
+                                # Skip invalid filenames
+                                continue
+                            
+                            try:
+                                uri = storage.put_bytes(
+                                    individual_prefix,
+                                    sanitized_name,
+                                    file_bytes,
+                                    content_type=guess_content_type(sanitized_name)
+                                )
+                                saved_files[sanitized_name] = uri
+                                
+                                # Track primary result URI
+                                if key == primary_key:
+                                    primary_uri = uri
+                            except Exception:
+                                # Skip files that fail to save
+                                continue
+                        
+                        # Use primary URI or first saved file
+                        result_uri = primary_uri if primary_uri else (next(iter(saved_files.values())) if saved_files else None)
+                        if result_uri:
+                            extra_out[f"item_{idx}"] = {"result_uri": result_uri}
+                    else:
+                        # Single JSON result (current behavior)
+                        uri = storage.put_json(individual_prefix, "result.json", item)
+                        extra_out[f"item_{idx}"] = {"result_uri": uri}
                 else:
                     raise TypeError(f"Unsupported list item type: {type(item)}")
         else:
@@ -301,8 +443,45 @@ def _write_outputs(storage: S3Storage, prefix: str, step: str, outputs: Dict[str
                 primary_mime = guess_content_type(primary_name)
                 primary_size_bytes = len(result[0])
             elif isinstance(result[0], dict):
-                primary_result_uri = storage.put_json(prefix, primary_name, result[0])
-                primary_mime = guess_content_type(primary_name)
+                # Check if dict contains bytes values (multiple files) or JSON data
+                if _is_dict_of_bytes(result[0]):
+                    # Dict of bytes: save each key-value pair as a file
+                    saved_files = {}
+                    primary_key = _find_primary_result_key(result[0])
+                    
+                    for key, file_bytes in result[0].items():
+                        sanitized_name = _sanitize_filename(key)
+                        if sanitized_name is None:
+                            # Skip invalid filenames
+                            continue
+                        
+                        try:
+                            uri = storage.put_bytes(
+                                prefix,
+                                sanitized_name,
+                                file_bytes,
+                                content_type=guess_content_type(sanitized_name)
+                            )
+                            saved_files[sanitized_name] = uri
+                            
+                            # Track primary result URI
+                            if key == primary_key:
+                                primary_result_uri = uri
+                                primary_mime = guess_content_type(sanitized_name)
+                                primary_size_bytes = len(file_bytes)
+                        except Exception:
+                            # Skip files that fail to save
+                            continue
+                    
+                    # If no primary was set, use first saved file
+                    if primary_result_uri is None and saved_files:
+                        first_file = next(iter(saved_files.items()))
+                        primary_result_uri = first_file[1]
+                        primary_mime = guess_content_type(first_file[0])
+                else:
+                    # Single JSON result (current behavior)
+                    primary_result_uri = storage.put_json(prefix, primary_name, result[0])
+                    primary_mime = guess_content_type(primary_name)
             else:
                 raise TypeError(f"Unsupported list item type: {type(result[0])}")
     else:

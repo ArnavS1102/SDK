@@ -24,6 +24,7 @@ def result_exists(storage: Optional[S3Storage], output_prefix: str) -> bool:
         # We'll just check for common result files
         for fname in ("result.json", "result.png", "result.mp4", "metrics.json"):
             uri = f"{output_prefix.rstrip('/')}/{fname}"
+            _logger.debug("Checking if result exists", {"uri": uri})
             if storage.exists(uri):
                 _logger.info("Task already completed (idempotent)", {
                     "output_prefix": output_prefix,
