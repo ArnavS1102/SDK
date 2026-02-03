@@ -6,10 +6,11 @@ aws:
   work_bucket: "vastra"
 
 queues:
-  segmentation:  "svastra-dev-video-segmentation-requested"
-  analysis:   "svastra-dev-video-analysis-requested"
-  identification: "svastra-dev-video-identification-requested"
-  dlq:     "svastra-dev-video-dlq"
+  segmentation:   "vastra-dev-segmentation"
+  analysis:       "vastra-dev-analysis"
+  identification: "vastra-dev-identification"
+  vton:           "vastra-dev-vton"
+  dlq:            "vastra-dev-dlq"
 
 steps:
   SEGMENTATION:
@@ -29,7 +30,13 @@ steps:
   ENHANCEMENT:
     filetype: "png"
     extensions: [".png"]
-    hooks_path: "services.face_blur.hooks.Hooks"
+    hooks_path: "services.cloth_enhancement.hooks.Hooks"
     next:
       - SEGMENTATION
     queue: "identification"
+
+  VIRTUAL_TRY:
+    filetype: "png"
+    extensions: [".png", ".jpg", ".jpeg"]
+    hooks_path: "services.virtualtry.hooks.Hooks"
+    queue: "vton"
