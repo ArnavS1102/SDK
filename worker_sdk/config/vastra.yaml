@@ -10,6 +10,7 @@ queues:
   analysis:       "vastra-dev-analysis"
   identification: "vastra-dev-identification"
   vton:           "vastra-dev-vton"
+  avatar:         "vastra-dev-avatar"
   dlq:            "vastra-dev-dlq"
 
 steps:
@@ -40,3 +41,9 @@ steps:
     extensions: [".png", ".jpg", ".jpeg"]
     hooks_path: "services.virtualtry.hooks.Hooks"
     queue: "vton"
+
+  AVATAR:
+    filetype: "png"
+    extensions: [".png"]
+    hooks_path: "services.avatar.hooks.Hooks"
+    queue: "avatar"
