@@ -546,6 +546,33 @@ class PostgresDB:
         return children
 
     # -----------------------------------------------------------------------
+    # Task results (result URIs saved by runner after _write_outputs)
+    # -----------------------------------------------------------------------
+    def get_task_result(
+        self,
+        *,
+        task_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return task result metadata (primary_result_uri, metrics_uri, extra) if present."""
+        sql = """
+        SELECT primary_result_uri, metrics_uri, primary_mime, primary_size_bytes, extra
+        FROM task_results
+        WHERE task_id=%s;
+        """
+        with self._pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, (task_id,))
+            row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "primary_result_uri": row[0],
+            "metrics_uri": row[1],
+            "primary_mime": row[2],
+            "primary_size_bytes": row[3],
+            "extra": row[4] or {},
+        }
+
+    # -----------------------------------------------------------------------
     # Pool lifecycle
     # -----------------------------------------------------------------------
     def close(self) -> None:

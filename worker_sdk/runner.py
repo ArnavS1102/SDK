@@ -204,6 +204,11 @@ def _process(storage: S3Storage, sqs_client: SQSClient, raw_msg: Dict[str, Any],
 
         log.info("Message validated, starting processing", {"input_uri": validated.input_uri, "output_prefix": output_prefix})
 
+        # Keep message invisible during long-running work (e.g. COMBINED can take 10+ min; default visibility is 300s)
+        visibility_timeout = (CONFIG.get("queues") or {}).get("timeout", 300)
+        visibility_timeout = max(60, min(int(visibility_timeout), 43200))  # 1 min to 12h (SQS max)
+        heartbeat_every = max(30, visibility_timeout // 4)
+
         # Persist job/task (best-effort)
         if db:
             try:
@@ -250,25 +255,30 @@ def _process(storage: S3Storage, sqs_client: SQSClient, raw_msg: Dict[str, Any],
                 log.warning("DB set_task_started failed", {"error": str(e)})
         # Build task context
         task_ctx = {"config": {"work_bucket": WORK_BUCKET, "step": step}, "logger": log, "storage": storage}
-        outputs = hooks.process(task_ctx, validated)
 
-        write_info = _write_outputs(storage, output_prefix, step, outputs, validated.task_id)
-        if db:
-            try:
-                db.save_task_result(
-                    task_id=task_id,
-                    primary_result_uri=write_info.get("primary_result_uri"),
-                    metrics_uri=write_info.get("metrics_uri"),
-                    primary_mime=write_info.get("primary_mime"),
-                    primary_size_bytes=write_info.get("primary_size_bytes"),
-                    extra=write_info.get("extra"),
-                )
-                db.set_task_succeeded(task_id=task_id)
-            except Exception as e:
-                log.warning("DB save_task_result/set_task_succeeded failed", {"error": str(e)})
-        _emit_children(storage, sqs_client, validated, outputs, step)
+        # Extend visibility periodically so long-running tasks (e.g. COMBINED) don't lose the message mid-run
+        with sqs_client.visibility_heartbeat(
+            queue_url, receipt, base_timeout=visibility_timeout, heartbeat_every=heartbeat_every
+        ):
+            outputs = hooks.process(task_ctx, validated)
 
-        sqs_client.delete_message(queue_url, receipt)
+            write_info = _write_outputs(storage, output_prefix, step, outputs, validated.task_id)
+            if db:
+                try:
+                    db.save_task_result(
+                        task_id=task_id,
+                        primary_result_uri=write_info.get("primary_result_uri"),
+                        metrics_uri=write_info.get("metrics_uri"),
+                        primary_mime=write_info.get("primary_mime"),
+                        primary_size_bytes=write_info.get("primary_size_bytes"),
+                        extra=write_info.get("extra"),
+                    )
+                    db.set_task_succeeded(task_id=task_id)
+                except Exception as e:
+                    log.warning("DB save_task_result/set_task_succeeded failed", {"error": str(e)})
+            _emit_children(storage, sqs_client, validated, outputs, step, write_info=write_info)
+
+            sqs_client.delete_message(queue_url, receipt)
         log.info("Task completed ✓")
 
     except Exception as e:
@@ -308,6 +318,8 @@ def _write_outputs(storage: S3Storage, prefix: str, step: str, outputs: Dict[str
     primary_size_bytes = None
     metrics_uri = None
     extra_out: Dict[str, Any] = {}
+    # Single source of truth: URIs we write for each fan-out child (same order as outputs["children"])
+    child_input_uris: List[str] = []
     
     # Write metrics
     if "metrics" in outputs and isinstance(outputs["metrics"], dict):
@@ -325,6 +337,8 @@ def _write_outputs(storage: S3Storage, prefix: str, step: str, outputs: Dict[str
                          content_type=guess_content_type(primary_name))
         primary_mime = guess_content_type(primary_name)
         primary_size_bytes = len(result)
+        if outputs.get("children"):
+            child_input_uris.append(primary_result_uri)
     
     elif isinstance(result, dict):
         # Check if dict contains bytes values (multiple files) or JSON data
@@ -362,10 +376,14 @@ def _write_outputs(storage: S3Storage, prefix: str, step: str, outputs: Dict[str
                 first_file = next(iter(saved_files.items()))
                 primary_result_uri = first_file[1]
                 primary_mime = guess_content_type(first_file[0])
+            if outputs.get("children"):
+                child_input_uris.append(primary_result_uri)
         else:
             # Single JSON result (current behavior)
             primary_result_uri = storage.put_json(prefix, primary_name, result)
             primary_mime = guess_content_type(primary_name)
+            if outputs.get("children"):
+                child_input_uris.append(primary_result_uri)
     
     elif isinstance(result, list):
         # Multiple results - create individual task folders for each item
@@ -386,6 +404,7 @@ def _write_outputs(storage: S3Storage, prefix: str, step: str, outputs: Dict[str
                     uri = storage.put_bytes(individual_prefix, "result.png", item,
                                     content_type=guess_content_type("result.png"))
                     extra_out[f"item_{idx}"] = {"result_uri": uri}
+                    child_input_uris.append(uri)
                 elif isinstance(item, dict):
                     # Create individual task folder for this item
                     individual_task_id = f"{task_id}-{idx:03d}"
@@ -429,19 +448,27 @@ def _write_outputs(storage: S3Storage, prefix: str, step: str, outputs: Dict[str
                         result_uri = primary_uri if primary_uri else (next(iter(saved_files.values())) if saved_files else None)
                         if result_uri:
                             extra_out[f"item_{idx}"] = {"result_uri": result_uri}
+                            child_input_uris.append(result_uri)
                     else:
                         # Single JSON result (current behavior)
                         uri = storage.put_json(individual_prefix, "result.json", item)
                         extra_out[f"item_{idx}"] = {"result_uri": uri}
+                        child_input_uris.append(uri)
                 else:
                     raise TypeError(f"Unsupported list item type: {type(item)}")
         else:
-            # Single item in list - save normally
+            # Single item in list - write to task_id-000/ so child input_uri (e.g. S1-000/result.png) matches
+            prefix_parts = prefix.split('/')
+            bucket = prefix_parts[2] if len(prefix_parts) > 2 else ""
+            user_id = prefix_parts[3] if len(prefix_parts) > 3 else ""
+            job_id = prefix_parts[4] if len(prefix_parts) > 4 else ""
+            single_prefix = f"s3://{bucket}/{user_id}/{job_id}/{step}/{task_id}-000/" if (bucket and user_id and job_id) else prefix
             if isinstance(result[0], bytes):
-                primary_result_uri = storage.put_bytes(prefix, primary_name, result[0],
+                primary_result_uri = storage.put_bytes(single_prefix, primary_name, result[0],
                                 content_type=guess_content_type(primary_name))
                 primary_mime = guess_content_type(primary_name)
                 primary_size_bytes = len(result[0])
+                child_input_uris.append(primary_result_uri)
             elif isinstance(result[0], dict):
                 # Check if dict contains bytes values (multiple files) or JSON data
                 if _is_dict_of_bytes(result[0]):
@@ -457,7 +484,7 @@ def _write_outputs(storage: S3Storage, prefix: str, step: str, outputs: Dict[str
                         
                         try:
                             uri = storage.put_bytes(
-                                prefix,
+                                single_prefix,
                                 sanitized_name,
                                 file_bytes,
                                 content_type=guess_content_type(sanitized_name)
@@ -478,10 +505,13 @@ def _write_outputs(storage: S3Storage, prefix: str, step: str, outputs: Dict[str
                         first_file = next(iter(saved_files.items()))
                         primary_result_uri = first_file[1]
                         primary_mime = guess_content_type(first_file[0])
+                    if primary_result_uri is not None:
+                        child_input_uris.append(primary_result_uri)
                 else:
                     # Single JSON result (current behavior)
-                    primary_result_uri = storage.put_json(prefix, primary_name, result[0])
+                    primary_result_uri = storage.put_json(single_prefix, primary_name, result[0])
                     primary_mime = guess_content_type(primary_name)
+                    child_input_uris.append(primary_result_uri)
             else:
                 raise TypeError(f"Unsupported list item type: {type(result[0])}")
     else:
@@ -505,6 +535,7 @@ def _write_outputs(storage: S3Storage, prefix: str, step: str, outputs: Dict[str
         "primary_size_bytes": primary_size_bytes,
         "metrics_uri": metrics_uri,
         "extra": extra_out or None,
+        "child_input_uris": child_input_uris,
     }
 
 
@@ -513,7 +544,8 @@ def _write_outputs(storage: S3Storage, prefix: str, step: str, outputs: Dict[str
 # ==========================================================
 
 def _emit_children(storage: S3Storage, sqs_client: SQSClient,
-                   parent_task, outputs: Dict[str, Any], step: str):
+                   parent_task, outputs: Dict[str, Any], step: str,
+                   write_info: Optional[Dict[str, Any]] = None):
     """
     Emit fan-out messages using explicit 'children' list from hooks.
     
@@ -559,11 +591,13 @@ def _emit_children(storage: S3Storage, sqs_client: SQSClient,
                 # Wrap non-dict data
                 params = {"data": child_data, "index": idx}
             
-            # Construct input_uri - use individual task folder if available
-            if explicit_idx is not None:
-                # Use individual task folder created by list processing
+            # Construct input_uri: single source of truth from writer when available
+            child_uris = (write_info or {}).get("child_input_uris") if write_info else []
+            if child_uris and idx < len(child_uris):
+                input_uri = child_uris[idx]
+            elif explicit_idx is not None:
+                # Fallback: use individual task folder created by list processing
                 individual_task_id = f"{parent_task.task_id}-{explicit_idx:03d}"
-                # Derive bucket/user_id/job_id from the parent output_prefix
                 _parts = parent_task.output_prefix.split('/')
                 _bucket = _parts[2]
                 _user_id = _parts[3]
@@ -571,7 +605,6 @@ def _emit_children(storage: S3Storage, sqs_client: SQSClient,
                 individual_prefix = f"s3://{_bucket}/{_user_id}/{_job_id}/{parent_task.step}/{individual_task_id}/"
                 input_uri = individual_prefix + "result.png"
             else:
-                # Fallback to primary name
                 input_uri = parent_task.output_prefix + _get_primary_name(step)
             
             msg = {
