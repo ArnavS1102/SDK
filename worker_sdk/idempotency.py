@@ -10,32 +10,28 @@ def result_exists(storage: Optional[S3Storage], output_prefix: str) -> bool:
     """
     Check if task output already exists (idempotency check).
 
-    Args:
-        storage: an instance of S3Storage (or compatible)
-        output_prefix: canonical s3://.../<job_id>/<step>/<task_id>/
-
-    Returns:
-        True if result.* or metrics.json exists under that prefix, else False.
+    output_prefix is step-level: s3://.../job_id/step/
+    Checks: metrics.json at step, or S0/result.* (slot layout), or result.* at step (legacy).
     """
     if not storage or not output_prefix:
         return False
 
+    prefix = output_prefix.rstrip("/")
+
     try:
-        # Check for any task output (metrics.json is written first by runner; SEGMENTATION etc. use it)
         for fname in ("metrics.json", "result.json", "result.png", "result.mp4"):
-            uri = f"{output_prefix.rstrip('/')}/{fname}"
-            _logger.debug("Checking if result exists", {"uri": uri})
+            uri = f"{prefix}/{fname}"
             if storage.exists(uri):
-                _logger.info("Task already completed (idempotent)", {
-                    "output_prefix": output_prefix,
-                    "found": fname
-                })
+                _logger.info("Task already completed (idempotent)", {"output_prefix": output_prefix, "found": fname})
+                return True
+        # Slot layout: S0/result.*
+        for slot in ("S0/result.json", "S0/result.png", "S0/result.mp4"):
+            uri = f"{prefix}/{slot}"
+            if storage.exists(uri):
+                _logger.info("Task already completed (idempotent)", {"output_prefix": output_prefix, "found": slot})
                 return True
         _logger.debug("No existing result found", {"output_prefix": output_prefix})
         return False
     except Exception as e:
-        _logger.warning("Idempotency check failed (assuming not exists)", {
-            "output_prefix": output_prefix,
-            "error": str(e)
-        })
+        _logger.warning("Idempotency check failed (assuming not exists)", {"output_prefix": output_prefix, "error": str(e)})
         return False

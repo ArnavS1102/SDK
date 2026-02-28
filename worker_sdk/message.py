@@ -333,19 +333,22 @@ def validate_output_prefix(output_prefix: str, bucket: str, user_id: str, job_id
     # Must end with trailing slash
     if not output_prefix.endswith("/"):
         return False
-    
+
     # Check for path traversal
     if ".." in output_prefix:
         return False
-    
-    # Build expected pattern
-    expected = f"s3://{bucket}/{user_id}/{job_id}/{step}/{task_id}/"
-    
-    # Must match exactly
-    if output_prefix != expected:
-        return False
-    
-    return True
+
+    # Accept step-only prefix: s3://bucket/user_id/job_id/step/
+    step_only = f"s3://{bucket}/{user_id}/{job_id}/{step}/"
+    if output_prefix == step_only:
+        return True
+
+    # Accept step + task_id: s3://bucket/user_id/job_id/step/task_id/
+    step_with_task = f"s3://{bucket}/{user_id}/{job_id}/{step}/{task_id}/"
+    if output_prefix == step_with_task:
+        return True
+
+    return False
 
 
 def validate_params(params: Dict[str, Any], max_size_bytes: int = 65536, max_depth: int = 5) -> bool:

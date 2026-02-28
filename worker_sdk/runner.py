@@ -97,10 +97,18 @@ def _get_primary_name(step: str) -> str:
 
 
 def _det_task_id(step: str, index: int, explicit_idx: int = None) -> str:
-    """Generate simple readable task IDs like S1, I2, V3."""
+    """Generate slot-style task IDs for child tasks: S0, S1, S2, ..."""
     if explicit_idx is not None:
-        return f"{step[0].upper()}{explicit_idx + 1}"
-    return f"{step[0].upper()}{index + 1}"
+        return f"S{explicit_idx}"
+    return f"S{index}"
+
+
+def _step_prefix(output_prefix: str) -> str:
+    """Derive step-level prefix from output_prefix (with or without task_id)."""
+    parts = output_prefix.rstrip("/").split("/")
+    if len(parts) >= 6:
+        return "s3://" + "/".join(parts[2:6]) + "/"
+    return output_prefix
 
 
 # ==========================================================
@@ -202,7 +210,8 @@ def _process(storage: S3Storage, sqs_client: SQSClient, raw_msg: Dict[str, Any],
         output_prefix = validated.output_prefix
         log = logger.bind(job_id=job_id, task_id=task_id, step=step)
 
-        log.info("Message validated, starting processing", {"input_uri": validated.input_uri, "output_prefix": output_prefix})
+        step_prefix = _step_prefix(output_prefix)
+        log.info("Message validated, starting processing", {"input_uri": validated.input_uri, "output_prefix": output_prefix, "step_prefix": step_prefix})
 
         # Keep message invisible during long-running work (e.g. COMBINED can take 10+ min; default visibility is 300s)
         visibility_timeout = (CONFIG.get("queues") or {}).get("timeout", 300)
@@ -242,7 +251,7 @@ def _process(storage: S3Storage, sqs_client: SQSClient, raw_msg: Dict[str, Any],
 
         # Skip poison pill logic for simplicity
         log.info("Checking if task already completed (idempotency check)...")
-        if result_exists(storage, output_prefix):
+        if result_exists(storage, step_prefix):
             log.info("Skipped (already done - idempotent)")
             sqs_client.delete_message(queue_url, receipt)
             return
@@ -262,7 +271,7 @@ def _process(storage: S3Storage, sqs_client: SQSClient, raw_msg: Dict[str, Any],
         ):
             outputs = hooks.process(task_ctx, validated)
 
-            write_info = _write_outputs(storage, output_prefix, step, outputs, validated.task_id)
+            write_info = _write_outputs(storage, step_prefix, step, outputs, validated.task_id)
             if db:
                 try:
                     db.save_task_result(
@@ -294,21 +303,21 @@ def _process(storage: S3Storage, sqs_client: SQSClient, raw_msg: Dict[str, Any],
 # Output Writing
 # ==========================================================
 
+def _slot_prefix(step_prefix: str, index: int) -> str:
+    """Return S3 prefix for slot index: step_prefix + S0/, S1/, ..."""
+    return f"{step_prefix.rstrip('/')}/S{index}/"
+
+
 def _write_outputs(storage: S3Storage, prefix: str, step: str, outputs: Dict[str, Any], task_id: str = None) -> Dict[str, Any]:
-    """Write model outputs - handles bytes, list[bytes], dict, list[dict], dict[bytes], list[dict[bytes]].
-    
-    Supported result types:
-    - bytes: Single binary file
-    - dict: JSON file (if values are not all bytes) or multiple files (if all values are bytes)
-    - list[bytes]: Multiple binary files in individual folders
-    - list[dict]: Multiple JSON files or multiple file sets in individual folders
-    - dict[bytes]: Multiple files with explicit filenames (keys are filenames, values are bytes)
-    - list[dict[bytes]]: Multiple file sets, each in its own folder
-    
-    For dict[bytes], keys are used as filenames (sanitized). Keys starting with 'result' 
-    are preferred as the primary result. Invalid filenames are skipped.
-    
-    Returns basic result metadata for DB."""
+    """Write model outputs under step-level prefix with clean hierarchy.
+
+    Layout: prefix = .../job_id/STEP/
+      - metrics.json at prefix
+      - Single result -> prefix/S0/result.*
+      - List of results -> prefix/S0/, prefix/S1/, ...
+
+    Handles: bytes, dict, list[bytes], list[dict], dict[bytes], list[dict[bytes]].
+    Returns basic result metadata for DB and child_input_uris for fan-out."""
     if not prefix.startswith("s3://"):
         raise ValueError(f"Invalid S3 prefix: {prefix}")
 
@@ -318,60 +327,45 @@ def _write_outputs(storage: S3Storage, prefix: str, step: str, outputs: Dict[str
     primary_size_bytes = None
     metrics_uri = None
     extra_out: Dict[str, Any] = {}
-    # Single source of truth: URIs we write for each fan-out child (same order as outputs["children"])
     child_input_uris: List[str] = []
-    
-    # Write metrics
+
+    # Metrics at step level
     if "metrics" in outputs and isinstance(outputs["metrics"], dict):
         metrics_uri = storage.put_json(prefix, "metrics.json", outputs["metrics"])
-    
+
     result = outputs.get("result")
-    
-    # Handle different result types
+
     if result is None:
-        pass  # No result to write
-    
+        pass
+
     elif isinstance(result, bytes):
-        # Single binary file
-        primary_result_uri = storage.put_bytes(prefix, primary_name, result, 
+        slot = _slot_prefix(prefix, 0)
+        primary_result_uri = storage.put_bytes(slot, primary_name, result,
                          content_type=guess_content_type(primary_name))
         primary_mime = guess_content_type(primary_name)
         primary_size_bytes = len(result)
         if outputs.get("children"):
             child_input_uris.append(primary_result_uri)
-    
+
     elif isinstance(result, dict):
-        # Check if dict contains bytes values (multiple files) or JSON data
+        slot = _slot_prefix(prefix, 0)
         if _is_dict_of_bytes(result):
-            # Dict of bytes: save each key-value pair as a file
             saved_files = {}
             primary_key = _find_primary_result_key(result)
-            
             for key, file_bytes in result.items():
                 sanitized_name = _sanitize_filename(key)
                 if sanitized_name is None:
-                    # Skip invalid filenames
                     continue
-                
                 try:
-                    uri = storage.put_bytes(
-                        prefix, 
-                        sanitized_name, 
-                        file_bytes,
-                        content_type=guess_content_type(sanitized_name)
-                    )
+                    uri = storage.put_bytes(slot, sanitized_name, file_bytes,
+                                           content_type=guess_content_type(sanitized_name))
                     saved_files[sanitized_name] = uri
-                    
-                    # Track primary result URI
                     if key == primary_key:
                         primary_result_uri = uri
                         primary_mime = guess_content_type(sanitized_name)
                         primary_size_bytes = len(file_bytes)
                 except Exception:
-                    # Skip files that fail to save
                     continue
-            
-            # If no primary was set, use first saved file
             if primary_result_uri is None and saved_files:
                 first_file = next(iter(saved_files.items()))
                 primary_result_uri = first_file[1]
@@ -379,128 +373,74 @@ def _write_outputs(storage: S3Storage, prefix: str, step: str, outputs: Dict[str
             if outputs.get("children"):
                 child_input_uris.append(primary_result_uri)
         else:
-            # Single JSON result (current behavior)
-            primary_result_uri = storage.put_json(prefix, primary_name, result)
+            primary_result_uri = storage.put_json(slot, primary_name, result)
             primary_mime = guess_content_type(primary_name)
             if outputs.get("children"):
                 child_input_uris.append(primary_result_uri)
-    
+
     elif isinstance(result, list):
-        # Multiple results - create individual task folders for each item
         if len(result) > 1:
-            # Create individual tasks for each item
             for idx, item in enumerate(result):
+                slot = _slot_prefix(prefix, idx)
                 if isinstance(item, bytes):
-                    # Create individual task folder for this item
-                    individual_task_id = f"{task_id}-{idx:03d}"
-                    # Extract bucket, user_id and job_id from prefix: s3://bucket/user_id/job_id/step/task_id/
-                    prefix_parts = prefix.split('/')
-                    bucket = prefix_parts[2]
-                    user_id = prefix_parts[3]
-                    job_id = prefix_parts[4]
-                    individual_prefix = f"s3://{bucket}/{user_id}/{job_id}/{step}/{individual_task_id}/"
-                    
-                    # Save as result.png in individual folder
-                    uri = storage.put_bytes(individual_prefix, "result.png", item,
-                                    content_type=guess_content_type("result.png"))
+                    uri = storage.put_bytes(slot, "result.png", item,
+                                           content_type=guess_content_type("result.png"))
                     extra_out[f"item_{idx}"] = {"result_uri": uri}
                     child_input_uris.append(uri)
                 elif isinstance(item, dict):
-                    # Create individual task folder for this item
-                    individual_task_id = f"{task_id}-{idx:03d}"
-                    # Extract bucket, user_id and job_id from prefix: s3://bucket/user_id/job_id/step/task_id/
-                    prefix_parts = prefix.split('/')
-                    bucket = prefix_parts[2]
-                    user_id = prefix_parts[3]
-                    job_id = prefix_parts[4]
-                    individual_prefix = f"s3://{bucket}/{user_id}/{job_id}/{step}/{individual_task_id}/"
-                    
-                    # Check if dict contains bytes values (multiple files) or JSON data
                     if _is_dict_of_bytes(item):
-                        # Dict of bytes: save each key-value pair as a file in the individual folder
                         saved_files = {}
                         primary_key = _find_primary_result_key(item)
                         primary_uri = None
-                        
                         for key, file_bytes in item.items():
                             sanitized_name = _sanitize_filename(key)
                             if sanitized_name is None:
-                                # Skip invalid filenames
                                 continue
-                            
                             try:
-                                uri = storage.put_bytes(
-                                    individual_prefix,
-                                    sanitized_name,
-                                    file_bytes,
-                                    content_type=guess_content_type(sanitized_name)
-                                )
+                                uri = storage.put_bytes(slot, sanitized_name, file_bytes,
+                                                       content_type=guess_content_type(sanitized_name))
                                 saved_files[sanitized_name] = uri
-                                
-                                # Track primary result URI
                                 if key == primary_key:
                                     primary_uri = uri
                             except Exception:
-                                # Skip files that fail to save
                                 continue
-                        
-                        # Use primary URI or first saved file
                         result_uri = primary_uri if primary_uri else (next(iter(saved_files.values())) if saved_files else None)
                         if result_uri:
                             extra_out[f"item_{idx}"] = {"result_uri": result_uri}
                             child_input_uris.append(result_uri)
                     else:
-                        # Single JSON result (current behavior)
-                        uri = storage.put_json(individual_prefix, "result.json", item)
+                        uri = storage.put_json(slot, "result.json", item)
                         extra_out[f"item_{idx}"] = {"result_uri": uri}
                         child_input_uris.append(uri)
                 else:
                     raise TypeError(f"Unsupported list item type: {type(item)}")
         else:
-            # Single item in list - write to task_id-000/ so child input_uri (e.g. S1-000/result.png) matches
-            prefix_parts = prefix.split('/')
-            bucket = prefix_parts[2] if len(prefix_parts) > 2 else ""
-            user_id = prefix_parts[3] if len(prefix_parts) > 3 else ""
-            job_id = prefix_parts[4] if len(prefix_parts) > 4 else ""
-            single_prefix = f"s3://{bucket}/{user_id}/{job_id}/{step}/{task_id}-000/" if (bucket and user_id and job_id) else prefix
+            # Single item in list -> S0/
+            slot = _slot_prefix(prefix, 0)
             if isinstance(result[0], bytes):
-                primary_result_uri = storage.put_bytes(single_prefix, primary_name, result[0],
-                                content_type=guess_content_type(primary_name))
+                primary_result_uri = storage.put_bytes(slot, primary_name, result[0],
+                                                      content_type=guess_content_type(primary_name))
                 primary_mime = guess_content_type(primary_name)
                 primary_size_bytes = len(result[0])
                 child_input_uris.append(primary_result_uri)
             elif isinstance(result[0], dict):
-                # Check if dict contains bytes values (multiple files) or JSON data
                 if _is_dict_of_bytes(result[0]):
-                    # Dict of bytes: save each key-value pair as a file
                     saved_files = {}
                     primary_key = _find_primary_result_key(result[0])
-                    
                     for key, file_bytes in result[0].items():
                         sanitized_name = _sanitize_filename(key)
                         if sanitized_name is None:
-                            # Skip invalid filenames
                             continue
-                        
                         try:
-                            uri = storage.put_bytes(
-                                single_prefix,
-                                sanitized_name,
-                                file_bytes,
-                                content_type=guess_content_type(sanitized_name)
-                            )
+                            uri = storage.put_bytes(slot, sanitized_name, file_bytes,
+                                                   content_type=guess_content_type(sanitized_name))
                             saved_files[sanitized_name] = uri
-                            
-                            # Track primary result URI
                             if key == primary_key:
                                 primary_result_uri = uri
                                 primary_mime = guess_content_type(sanitized_name)
                                 primary_size_bytes = len(file_bytes)
                         except Exception:
-                            # Skip files that fail to save
                             continue
-                    
-                    # If no primary was set, use first saved file
                     if primary_result_uri is None and saved_files:
                         first_file = next(iter(saved_files.items()))
                         primary_result_uri = first_file[1]
@@ -508,22 +448,21 @@ def _write_outputs(storage: S3Storage, prefix: str, step: str, outputs: Dict[str
                     if primary_result_uri is not None:
                         child_input_uris.append(primary_result_uri)
                 else:
-                    # Single JSON result (current behavior)
-                    primary_result_uri = storage.put_json(single_prefix, primary_name, result[0])
+                    primary_result_uri = storage.put_json(slot, primary_name, result[0])
                     primary_mime = guess_content_type(primary_name)
                     child_input_uris.append(primary_result_uri)
             else:
                 raise TypeError(f"Unsupported list item type: {type(result[0])}")
     else:
         raise TypeError(f"Unsupported result type: {type(result)}")
-    
-    # Write auxiliary data
+
+    # Auxiliary data at step level
     aux = outputs.get("aux", {})
     for name, data in aux.items():
         ensure_within_prefix(prefix, name)
         if isinstance(data, bytes):
-            uri = storage.put_bytes(prefix, name, data, 
-                            content_type=guess_content_type(name))
+            uri = storage.put_bytes(prefix, name, data,
+                                    content_type=guess_content_type(name))
             extra_out[name] = {"result_uri": uri}
         elif isinstance(data, dict):
             uri = storage.put_json(prefix, name, data)
@@ -595,17 +534,11 @@ def _emit_children(storage: S3Storage, sqs_client: SQSClient,
             child_uris = (write_info or {}).get("child_input_uris") if write_info else []
             if child_uris and idx < len(child_uris):
                 input_uri = child_uris[idx]
-            elif explicit_idx is not None:
-                # Fallback: use individual task folder created by list processing
-                individual_task_id = f"{parent_task.task_id}-{explicit_idx:03d}"
-                _parts = parent_task.output_prefix.split('/')
-                _bucket = _parts[2]
-                _user_id = _parts[3]
-                _job_id = _parts[4]
-                individual_prefix = f"s3://{_bucket}/{_user_id}/{_job_id}/{parent_task.step}/{individual_task_id}/"
-                input_uri = individual_prefix + "result.png"
             else:
-                input_uri = parent_task.output_prefix + _get_primary_name(step)
+                # Fallback: step-level layout .../STEP/S0/result.*
+                parent_step_prefix = _step_prefix(parent_task.output_prefix)
+                slot_idx = explicit_idx if explicit_idx is not None else idx
+                input_uri = _slot_prefix(parent_step_prefix, slot_idx) + _get_primary_name(step)
             
             msg = {
                 "job_id": parent_task.job_id,

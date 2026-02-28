@@ -487,7 +487,28 @@ class SQSClient:
             raise ValueError("Path traversal not allowed")
         
         return f"s3://{bucket}/{user_id}/{job_id}/{step}/{task_id}/"
-    
+
+    @staticmethod
+    def build_step_prefix(bucket: str, user_id: str, job_id: str, step: str) -> str:
+        """Build step-level output prefix (no task_id): s3://<bucket>/<user_id>/<job_id>/<step>/"""
+        if not all([bucket, user_id, job_id, step]):
+            raise ValueError("All parameters required: bucket, user_id, job_id, step")
+        bucket = bucket.strip().strip('/')
+        user_id = user_id.strip().strip('/')
+        job_id = job_id.strip().strip('/')
+        step = step.strip().strip('/').upper()
+        if not re.match(r'^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$', bucket):
+            raise ValueError(f"Invalid bucket name: {bucket}")
+        if not re.match(r'^[a-zA-Z0-9_-]{1,128}$', user_id):
+            raise ValueError(f"Invalid user_id: {user_id}")
+        if not re.match(r'^[a-zA-Z0-9_-]{1,128}$', job_id):
+            raise ValueError(f"Invalid job_id: {job_id}")
+        if step not in VALID_STEPS:
+            raise ValueError(f"Invalid step: {step}. Must be one of {VALID_STEPS}")
+        if '..' in bucket or '..' in user_id or '..' in job_id or '..' in step:
+            raise ValueError("Path traversal not allowed")
+        return f"s3://{bucket}/{user_id}/{job_id}/{step}/"
+
     @staticmethod
     def message_to_dict(message: TaskMessage, preserve_unknown: bool = True) -> TaskDict:
         """Convert TaskMessage to dict (strict JSON validation)."""
@@ -780,8 +801,13 @@ def get_queue_stats(sqs, queue_url: str, include_extra: bool = False) -> Dict[st
     return client.get_queue_stats(queue_url, include_extra)
 
 def build_output_prefix(bucket: str, user_id: str, job_id: str, step: str, task_id: str) -> str:
-    """Build canonical output_prefix."""
+    """Build canonical output_prefix: .../step/task_id/"""
     return SQSClient.build_output_prefix(bucket, user_id, job_id, step, task_id)
+
+
+def build_step_prefix(bucket: str, user_id: str, job_id: str, step: str) -> str:
+    """Build step-level prefix (no task_id): .../step/"""
+    return SQSClient.build_step_prefix(bucket, user_id, job_id, step)
 
 def message_to_dict(message: TaskMessage, preserve_unknown: bool = True) -> TaskDict:
     """Convert TaskMessage to dict."""
@@ -794,5 +820,5 @@ __all__ = [
     "get_sqs_client", "receive_messages", "parse_message", "is_poison_pill",
     "delete_message", "change_visibility", "extend_visibility_loop", "visibility_heartbeat",
     "send_message", "send_messages_batch", "requeue_with_delay", "move_to_dlq",
-    "get_queue_stats", "build_output_prefix", "message_to_dict",
+    "get_queue_stats", "build_output_prefix", "build_step_prefix", "message_to_dict",
 ]

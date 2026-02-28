@@ -389,19 +389,18 @@ class S3Storage:
         if not output_prefix or not isinstance(output_prefix, str):
             return None
         
-        # s3://bucket/user_id/job_id/step/task_id/
-        pattern = r'^s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/[a-zA-Z0-9_-]+/([a-zA-Z0-9_-]+)/[^/]+/[^/]+/?$'
+        # s3://bucket/user_id/job_id/step/ or s3://bucket/user_id/job_id/step/task_id/
+        pattern = r'^s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/[a-zA-Z0-9_-]+/([a-zA-Z0-9_-]+)/[^/]+(/[^/]+)?/?$'
         match = re.match(pattern, output_prefix)
-        
         return match.group(1) if match else None
-    
+
     @staticmethod
     def extract_user_id_from_prefix(output_prefix: str) -> Optional[str]:
         """Parse user_id from output_prefix."""
         if not output_prefix or not isinstance(output_prefix, str):
             return None
-        # s3://bucket/user_id/job_id/step/task_id/
-        pattern = r'^s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/([a-zA-Z0-9_-]+)/[a-zA-Z0-9_-]+/[^/]+/[^/]+/?$'
+        # s3://bucket/user_id/job_id/step/ or .../step/task_id/
+        pattern = r'^s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/([a-zA-Z0-9_-]+)/[a-zA-Z0-9_-]+/[^/]+(/[^/]+)?/?$'
         match = re.match(pattern, output_prefix)
         return match.group(1) if match else None
     
