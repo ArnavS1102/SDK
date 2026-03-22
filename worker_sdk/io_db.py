@@ -323,6 +323,89 @@ class PostgresDB:
             error_message=row[11],
         )
 
+    def apply_results_completion(
+        self,
+        *,
+        task: TaskRecord,
+        primary_result_uri: Optional[str] = None,
+        metrics_uri: Optional[str] = None,
+        primary_mime: Optional[str] = None,
+        primary_size_bytes: Optional[int] = None,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """
+        One transaction: upsert `tasks`, then `task_results` when status is SUCCEEDED.
+
+        Use this from the results-queue consumer so task + result metadata commit together
+        (no half-updated state if the process dies mid-flight).
+        """
+        if not validate_task_status(task.status):
+            raise ValueError(f"Invalid task status: {task.status}")
+        extra = extra or {}
+        upsert_sql = """
+        INSERT INTO tasks (
+            task_id, job_id, user_id, step, status, retry_count, parent_task_id,
+            input_uri, output_prefix, params, error_code, error_message
+        )
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        ON CONFLICT (task_id) DO UPDATE SET
+            status = EXCLUDED.status,
+            retry_count = EXCLUDED.retry_count,
+            error_code = EXCLUDED.error_code,
+            error_message = EXCLUDED.error_message,
+            params = EXCLUDED.params,
+            updated_at = NOW();
+        """
+        result_sql = """
+        INSERT INTO task_results (
+            task_id, primary_result_uri, metrics_uri, primary_mime, primary_size_bytes, extra
+        )
+        VALUES (%s,%s,%s,%s,%s,%s)
+        ON CONFLICT (task_id) DO UPDATE SET
+            primary_result_uri = EXCLUDED.primary_result_uri,
+            metrics_uri = EXCLUDED.metrics_uri,
+            primary_mime = EXCLUDED.primary_mime,
+            primary_size_bytes = EXCLUDED.primary_size_bytes,
+            extra = EXCLUDED.extra;
+        """
+        with self._pool.connection() as conn:
+            with conn.transaction():
+                with conn.cursor() as cur:
+                    cur.execute(
+                        upsert_sql,
+                        (
+                            task.task_id,
+                            task.job_id,
+                            task.user_id,
+                            task.step,
+                            task.status,
+                            int(task.retry_count),
+                            task.parent_task_id,
+                            task.input_uri,
+                            task.output_prefix,
+                            psycopg.types.json.Json(task.params or {}),
+                            task.error_code,
+                            task.error_message,
+                        ),
+                    )
+                    if task.status == "SUCCEEDED" and (
+                        primary_result_uri
+                        or metrics_uri
+                        or primary_mime is not None
+                        or primary_size_bytes is not None
+                    ):
+                        cur.execute(
+                            result_sql,
+                            (
+                                task.task_id,
+                                primary_result_uri,
+                                metrics_uri,
+                                primary_mime,
+                                primary_size_bytes,
+                                psycopg.types.json.Json(extra),
+                            ),
+                        )
+
     def set_task_started(self, *, task_id: str) -> None:
         sql = "UPDATE tasks SET status='STARTED', started_at=NOW(), updated_at=NOW() WHERE task_id=%s;"
         with self._pool.connection() as conn, conn.cursor() as cur:
@@ -362,10 +445,10 @@ class PostgresDB:
         self,
         *,
         task_id: str,
-        primary_result_uri: Optional[str],
-        metrics_uri: Optional[str],
-        primary_mime: Optional[str],
-        primary_size_bytes: Optional[int],
+        primary_result_uri: Optional[str] = None,
+        metrics_uri: Optional[str] = None,
+        primary_mime: Optional[str] = None,
+        primary_size_bytes: Optional[int] = None,
         extra: Optional[Dict[str, Any]] = None,
     ) -> None:
         extra = extra or {}
