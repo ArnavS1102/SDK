@@ -134,6 +134,15 @@ def get_primary_filetype(step: str) -> str:
 def get_queue_url(step: str) -> str:
     return QUEUE_URLS.get(step)
 
+
+def get_results_queue_url() -> Optional[str]:
+    """SQS URL for the optional `results` queue (observability / fan-out mirror)."""
+    name = QUEUE_NAMES.get("results")
+    if not name:
+        return None
+    return build_sqs_url(name)
+
+
 def get_hooks_path(step: str) -> Optional[str]:
     return STEPS.get(step, {}).get("hooks_path")
 

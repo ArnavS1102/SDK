@@ -84,7 +84,14 @@ def load_config(path: str = None) -> Dict[str, Any]:
 
 CONFIG = load_config()
 
-AWS_ACCOUNT_ID = CONFIG["aws"]["account_id"]
+# Account ID is deployment-specific and must be supplied via env var.
+# It is not stored in the YAML to avoid hardcoding it across environments.
+AWS_ACCOUNT_ID = os.environ.get("AWS_ACCOUNT_ID")
+if not AWS_ACCOUNT_ID:
+    raise RuntimeError(
+        "AWS_ACCOUNT_ID env var is required. "
+        "Set it to your 12-digit AWS account ID (e.g. export AWS_ACCOUNT_ID=123456789012)."
+    )
 AWS_REGION = CONFIG["aws"]["region"]
 WORK_BUCKET = CONFIG["aws"]["work_bucket"]
 
@@ -133,6 +140,15 @@ def get_primary_filetype(step: str) -> str:
 
 def get_queue_url(step: str) -> str:
     return QUEUE_URLS.get(step)
+
+
+def get_results_queue_url() -> Optional[str]:
+    """SQS URL for the optional `results` queue (observability / fan-out mirror)."""
+    name = QUEUE_NAMES.get("results")
+    if not name:
+        return None
+    return build_sqs_url(name)
+
 
 def get_hooks_path(step: str) -> Optional[str]:
     """Get the hooks class path for a step, or None if not defined."""

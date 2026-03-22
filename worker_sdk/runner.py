@@ -7,7 +7,9 @@ from typing import Any, Dict, List, Optional
 from .constants import (
     CONFIG,
     WORK_BUCKET,
+    TaskMessage,
     get_queue_url,
+    get_results_queue_url,
     get_next_steps,
     get_primary_filetype,
     get_hooks_path,
@@ -112,6 +114,62 @@ def _step_prefix(output_prefix: str) -> str:
 
 
 # ==========================================================
+# Results queue (one completion per finished task; primary artifact only)
+# ==========================================================
+
+def _results_completion_payload(task: TaskMessage, write_info: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Single message per completed step: task identity + main artifact URI from _write_outputs.
+    Fan-out child messages are not mirrored here.
+    """
+    step = str(task.step).upper().strip()
+    primary = write_info.get("primary_result_uri")
+    if not primary:
+        ciu = write_info.get("child_input_uris") or []
+        if ciu:
+            primary = ciu[0]
+    out: Dict[str, Any] = {
+        "schema": getattr(task, "schema", "v1"),
+        "job_id": str(task.job_id),
+        "task_id": str(task.task_id),
+        "user_id": task.user_id,
+        "step": step,
+        "input_uri": str(getattr(task, "input_uri", "") or ""),
+        "output_prefix": str(task.output_prefix),
+        "params": dict(getattr(task, "params", {}) or {}),
+        "retry_count": int(getattr(task, "retry_count", 0) or 0),
+        "primary_result_uri": primary,
+    }
+    mu = write_info.get("metrics_uri")
+    if mu:
+        out["metrics_uri"] = mu
+    if write_info.get("primary_mime"):
+        out["primary_mime"] = write_info["primary_mime"]
+    if write_info.get("primary_size_bytes") is not None:
+        out["primary_size_bytes"] = write_info["primary_size_bytes"]
+    if task.trace_id is not None:
+        out["trace_id"] = str(task.trace_id)
+    if task.parent_task_id is not None:
+        out["parent_task_id"] = str(task.parent_task_id)
+    json.dumps(out)
+    return out
+
+
+def _publish_results_completion(
+    sqs_client: SQSClient,
+    logger,
+    payload: Dict[str, Any],
+) -> None:
+    url = get_results_queue_url()
+    if not url:
+        return
+    try:
+        sqs_client.send_message(url, payload)
+    except Exception as e:
+        logger.warning("results queue publish failed", {"error": str(e)})
+
+
+# ==========================================================
 # Core Runner Logic
 # ==========================================================
 
@@ -195,7 +253,7 @@ def _process(storage: S3Storage, sqs_client: SQSClient, raw_msg: Dict[str, Any],
         
         # Validate message schema
         try:
-            validated = validate_message(task_dict, bucket_allowlist=[WORK_BUCKET, "my-s3io-tests"])
+            validated = validate_message(task_dict, bucket_allowlist=[WORK_BUCKET])
         except (ValueError, TypeError) as e:
             # Invalid message - delete it to stop retries
             logger.error(f"Invalid message (deleting): {e}", {
@@ -209,6 +267,18 @@ def _process(storage: S3Storage, sqs_client: SQSClient, raw_msg: Dict[str, Any],
         task_id = validated.task_id
         output_prefix = validated.output_prefix
         log = logger.bind(job_id=job_id, task_id=task_id, step=step)
+
+        if validated.step != step:
+            # Same SQS queue can serve multiple steps; release so the worker for message.step can receive it.
+            log.info(
+                "Skipping message for other step",
+                {"message_step": validated.step, "worker_step": step},
+            )
+            try:
+                sqs_client.change_visibility(queue_url, receipt, 0)
+            except Exception as e:
+                log.warning("change_visibility(0) failed", {"error": str(e)})
+            return
 
         step_prefix = _step_prefix(output_prefix)
         log.info("Message validated, starting processing", {"input_uri": validated.input_uri, "output_prefix": output_prefix, "step_prefix": step_prefix})
@@ -249,9 +319,9 @@ def _process(storage: S3Storage, sqs_client: SQSClient, raw_msg: Dict[str, Any],
             except Exception as e:
                 log.warning("DB upsert failed (continuing)", {"error": str(e)})
 
-        # Skip poison pill logic for simplicity
+        # Skip poison pill logic for simplicity (per-slot for fan-out steps)
         log.info("Checking if task already completed (idempotency check)...")
-        if result_exists(storage, step_prefix):
+        if result_exists(storage, step_prefix, task_id=validated.task_id):
             log.info("Skipped (already done - idempotent)")
             sqs_client.delete_message(queue_url, receipt)
             return
@@ -285,6 +355,9 @@ def _process(storage: S3Storage, sqs_client: SQSClient, raw_msg: Dict[str, Any],
                     db.set_task_succeeded(task_id=task_id)
                 except Exception as e:
                     log.warning("DB save_task_result/set_task_succeeded failed", {"error": str(e)})
+            _publish_results_completion(
+                sqs_client, log, _results_completion_payload(validated, write_info)
+            )
             _emit_children(storage, sqs_client, validated, outputs, step, write_info=write_info)
 
             sqs_client.delete_message(queue_url, receipt)
@@ -306,6 +379,16 @@ def _process(storage: S3Storage, sqs_client: SQSClient, raw_msg: Dict[str, Any],
 def _slot_prefix(step_prefix: str, index: int) -> str:
     """Return S3 prefix for slot index: step_prefix + S0/, S1/, ..."""
     return f"{step_prefix.rstrip('/')}/S{index}/"
+
+
+def _slot_index_from_task_id(task_id: str = None) -> int:
+    """Parse slot index from task_id (S0 -> 0, S1 -> 1). Default 0 if not slot-style."""
+    if not task_id or not isinstance(task_id, str) or len(task_id) < 2 or task_id[0] != "S":
+        return 0
+    try:
+        return int(task_id[1:])
+    except ValueError:
+        return 0
 
 
 def _write_outputs(storage: S3Storage, prefix: str, step: str, outputs: Dict[str, Any], task_id: str = None) -> Dict[str, Any]:
@@ -339,7 +422,8 @@ def _write_outputs(storage: S3Storage, prefix: str, step: str, outputs: Dict[str
         pass
 
     elif isinstance(result, bytes):
-        slot = _slot_prefix(prefix, 0)
+        slot_idx = _slot_index_from_task_id(task_id)
+        slot = _slot_prefix(prefix, slot_idx)
         primary_result_uri = storage.put_bytes(slot, primary_name, result,
                          content_type=guess_content_type(primary_name))
         primary_mime = guess_content_type(primary_name)
@@ -348,7 +432,8 @@ def _write_outputs(storage: S3Storage, prefix: str, step: str, outputs: Dict[str
             child_input_uris.append(primary_result_uri)
 
     elif isinstance(result, dict):
-        slot = _slot_prefix(prefix, 0)
+        slot_idx = _slot_index_from_task_id(task_id)
+        slot = _slot_prefix(prefix, slot_idx)
         if _is_dict_of_bytes(result):
             saved_files = {}
             primary_key = _find_primary_result_key(result)
@@ -415,8 +500,9 @@ def _write_outputs(storage: S3Storage, prefix: str, step: str, outputs: Dict[str
                 else:
                     raise TypeError(f"Unsupported list item type: {type(item)}")
         else:
-            # Single item in list -> S0/
-            slot = _slot_prefix(prefix, 0)
+            # Single item in list -> use task's slot (e.g. S1/)
+            slot_idx = _slot_index_from_task_id(task_id)
+            slot = _slot_prefix(prefix, slot_idx)
             if isinstance(result[0], bytes):
                 primary_result_uri = storage.put_bytes(slot, primary_name, result[0],
                                                       content_type=guess_content_type(primary_name))
@@ -520,6 +606,9 @@ def _emit_children(storage: S3Storage, sqs_client: SQSClient,
         for idx, child_data in enumerate(children):
             # Use explicit idx if provided, otherwise use enumerate idx
             explicit_idx = child_data.get("idx") if isinstance(child_data, dict) else None
+            # When parent emits a single child (e.g. enhancement S1 -> one analysis), child must keep parent's slot so DB gets job_id-S1 not job_id-S0
+            if explicit_idx is None and len(children) == 1 and getattr(parent_task, "task_id", None):
+                explicit_idx = _slot_index_from_task_id(parent_task.task_id)
             child_task_id = _det_task_id(next_step, idx, explicit_idx)
             child_prefix = make_output_prefix(parent_task.user_id, parent_task.job_id, next_step, child_task_id)
             
@@ -531,9 +620,10 @@ def _emit_children(storage: S3Storage, sqs_client: SQSClient,
                 params = {"data": child_data, "index": idx}
             
             # Construct input_uri: single source of truth from writer when available
-            child_uris = (write_info or {}).get("child_input_uris") if write_info else []
-            if child_uris and idx < len(child_uris):
-                input_uri = child_uris[idx]
+            child_uris = (write_info or {}).get("child_input_uris") or []
+            if child_uris:
+                # When more children than uris (e.g. 3 avatars from 1 model image), reuse first uri
+                input_uri = child_uris[min(idx, len(child_uris) - 1)]
             else:
                 # Fallback: step-level layout .../STEP/S0/result.*
                 parent_step_prefix = _step_prefix(parent_task.output_prefix)

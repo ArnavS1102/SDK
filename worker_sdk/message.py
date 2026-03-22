@@ -196,6 +196,8 @@ def validate_input_uri(uri: str, bucket_allowlist: List[str]) -> bool:
     """
     Junior dev: Check the input file path is safe and accessible.
     
+    Empty string is allowed for steps that don't require input (e.g. MODEL_PROFILE text-to-image).
+    
     S3 Bucket Primer:
     - A bucket is like a top-level folder in cloud storage (AWS S3 or Cloudflare R2)
     - Format: s3://<bucket-name>/<path>/<to>/<file.jpg>
@@ -227,8 +229,10 @@ def validate_input_uri(uri: str, bucket_allowlist: List[str]) -> bool:
     Returns:
         True if valid, False otherwise
     """
-    if not uri or not isinstance(uri, str):
+    if not isinstance(uri, str):
         return False
+    if not uri:
+        return True  # Empty allowed for steps without input (e.g. MODEL_PROFILE)
     
     # Check scheme
     if not (uri.startswith("s3://") or uri.startswith("r2://")):

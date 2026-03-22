@@ -1,7 +1,8 @@
 # config.yaml
+# SEGMENTATION: Grounding DINO (4-category prompt, enclosing filter, NMS) -> crops on white.
 
 aws:
-  account_id: "581867121448"
+  # account_id is read from AWS_ACCOUNT_ID env var at runtime — not stored here.
   region: "us-east-1"
   work_bucket: "vastra"
 
@@ -11,9 +12,19 @@ queues:
   identification: "vastra-dev-identification"
   vton:           "vastra-dev-vton"
   avatar:         "vastra-dev-avatar"
+  model_profile:  "vastra-dev-model-profile"
+  results:        "vastra-dev-results"
   dlq:            "vastra-dev-dlq"
 
 steps:
+  ENHANCEMENT:
+    filetype: "png"
+    extensions: [".png"]
+    hooks_path: "services.cloth_enhancement.hooks.Hooks"
+    next:
+      - SEGMENTATION
+    queue: "identification"
+
   SEGMENTATION:
     filetype: "png"
     extensions: [".png"]
@@ -27,14 +38,7 @@ steps:
     extensions: [".json"]
     hooks_path: "services.cloth_analysis.hooks.Hooks"
     queue: "analysis"
-
-  ENHANCEMENT:
-    filetype: "png"
-    extensions: [".png"]
-    hooks_path: "services.cloth_enhancement.hooks.Hooks"
-    next:
-      - SEGMENTATION
-    queue: "identification"
+    # no next: terminal step
 
   VIRTUAL_TRY:
     filetype: "png"
@@ -47,3 +51,11 @@ steps:
     extensions: [".png"]
     hooks_path: "services.avatar.hooks.Hooks"
     queue: "avatar"
+
+  MODEL_PROFILE:
+    filetype: "png"
+    extensions: [".png"]
+    hooks_path: "services.model_profile.hooks.Hooks"
+    queue: "model_profile"
+    next:
+      - AVATAR
