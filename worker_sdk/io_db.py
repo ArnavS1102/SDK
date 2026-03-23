@@ -16,8 +16,9 @@ Notes:
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 try:
     import psycopg
@@ -254,6 +255,94 @@ class PostgresDB:
             attrs=row[5] or {},
         )
 
+    def create_or_get_job_and_upsert_task(
+        self,
+        *,
+        job_id: str,
+        user_id: str,
+        schema: str,
+        job_status: str = "QUEUED",
+        trace_id: Optional[str] = None,
+        attrs: Optional[Dict[str, Any]] = None,
+        task: TaskRecord,
+        after_writes: Optional[Callable[[Any], None]] = None,
+    ) -> TaskRecord:
+        """
+        One transaction: ensure job row exists, upsert task, optional `after_writes(cursor)`
+        (e.g. pending avatars / vtry rows from the API gateway).
+        """
+        if not validate_job_status(job_status):
+            raise ValueError(f"Invalid job status: {job_status}")
+        if not validate_task_status(task.status):
+            raise ValueError(f"Invalid task status: {task.status}")
+        attrs = attrs or {}
+        job_sql = """
+        INSERT INTO jobs (job_id, user_id, schema, status, trace_id, attrs)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        ON CONFLICT (job_id)
+        DO UPDATE SET updated_at = NOW()
+        RETURNING job_id, user_id, schema, status, trace_id, COALESCE(attrs, '{}'::jsonb);
+        """
+        task_sql = """
+        INSERT INTO tasks (
+            task_id, job_id, user_id, step, status, retry_count, parent_task_id,
+            input_uri, output_prefix, params, error_code, error_message
+        )
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        ON CONFLICT (task_id) DO UPDATE SET
+            status = EXCLUDED.status,
+            retry_count = EXCLUDED.retry_count,
+            error_code = EXCLUDED.error_code,
+            error_message = EXCLUDED.error_message,
+            params = EXCLUDED.params,
+            updated_at = NOW()
+        RETURNING
+            task_id, job_id, user_id, step, status, retry_count, parent_task_id,
+            input_uri, output_prefix, params, error_code, error_message;
+        """
+        with self._pool.connection() as conn:
+            with conn.transaction():
+                with conn.cursor() as cur:
+                    cur.execute(
+                        job_sql,
+                        (job_id, user_id, schema, job_status, trace_id, psycopg.types.json.Json(attrs)),
+                    )
+                    cur.fetchone()
+                    cur.execute(
+                        task_sql,
+                        (
+                            task.task_id,
+                            task.job_id,
+                            task.user_id,
+                            task.step,
+                            task.status,
+                            int(task.retry_count),
+                            task.parent_task_id,
+                            task.input_uri,
+                            task.output_prefix,
+                            psycopg.types.json.Json(task.params or {}),
+                            task.error_code,
+                            task.error_message,
+                        ),
+                    )
+                    row = cur.fetchone()
+                    if after_writes is not None:
+                        after_writes(cur)
+        return TaskRecord(
+            task_id=row[0],
+            job_id=row[1],
+            user_id=row[2],
+            step=row[3],
+            status=row[4],
+            retry_count=row[5],
+            parent_task_id=row[6],
+            input_uri=row[7],
+            output_prefix=row[8],
+            params=row[9] or {},
+            error_code=row[10],
+            error_message=row[11],
+        )
+
     def update_job_status(self, *, job_id: str, status: str) -> None:
         if not validate_job_status(status):
             raise ValueError(f"Invalid job status: {status}")
@@ -332,9 +421,11 @@ class PostgresDB:
         primary_mime: Optional[str] = None,
         primary_size_bytes: Optional[int] = None,
         extra: Optional[Dict[str, Any]] = None,
+        after_writes: Optional[Callable[[Any], None]] = None,
     ) -> None:
         """
-        One transaction: upsert `tasks`, then `task_results` when status is SUCCEEDED.
+        One transaction: upsert `tasks`, then `task_results` when status is SUCCEEDED,
+        then optional `after_writes(cursor)` (e.g. business tables + job rollup).
 
         Use this from the results-queue consumer so task + result metadata commit together
         (no half-updated state if the process dies mid-flight).
@@ -405,6 +496,8 @@ class PostgresDB:
                                 psycopg.types.json.Json(extra),
                             ),
                         )
+                    if after_writes is not None:
+                        after_writes(cur)
 
     def set_task_started(self, *, task_id: str) -> None:
         sql = "UPDATE tasks SET status='STARTED', started_at=NOW(), updated_at=NOW() WHERE task_id=%s;"
@@ -654,6 +747,16 @@ class PostgresDB:
             "primary_size_bytes": row[3],
             "extra": row[4] or {},
         }
+
+    # -----------------------------------------------------------------------
+    # Gateway / business writes (multi-statement, one commit)
+    # -----------------------------------------------------------------------
+    @contextmanager
+    def write_transaction(self):
+        """Yield a connection inside a single transaction (for batched SQL)."""
+        with self._pool.connection() as conn:
+            with conn.transaction():
+                yield conn
 
     # -----------------------------------------------------------------------
     # Pool lifecycle
