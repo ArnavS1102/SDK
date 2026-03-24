@@ -75,6 +75,11 @@ class JobRecord:
 
 @dataclass
 class TaskRecord:
+    """
+    Persisted task row. Overlapping fields match :class:`worker_sdk.work_queue_message.WorkQueueMessage`
+    (SQS body is validated with that type; do not duplicate wire shape elsewhere).
+    """
+
     task_id: str
     job_id: str
     user_id: str
@@ -777,15 +782,3 @@ __all__ = [
     "TaskRecord",
     "PostgresDB",
 ]
-
-"""
-Task DB: atomic claim/lease, set status, increment counters.
-
-TODO: Implement status validators here:
-- validate_task_status(status: str) -> bool
-  Check against VALID_TASK_STATUSES from contracts before writing to DB
-  
-- validate_job_status(status: str) -> bool
-  Check against VALID_JOB_STATUSES from contracts before writing to DB
-"""
-

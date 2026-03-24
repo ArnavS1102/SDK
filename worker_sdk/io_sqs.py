@@ -463,29 +463,29 @@ class SQSClient:
         """Build canonical output_prefix: s3://<bucket>/<user_id>/<job_id>/<step>/<task_id>/"""
         if not all([bucket, user_id, job_id, step, task_id]):
             raise ValueError("All parameters required: bucket, user_id, job_id, step, task_id")
-        
-        bucket = bucket.strip().strip('/')
-        user_id = user_id.strip().strip('/')
-        job_id = job_id.strip().strip('/')
-        step = step.strip().strip('/').upper()
-        task_id = task_id.strip().strip('/')
-        
-        if not re.match(r'^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$', bucket):
+
+        bucket = bucket.strip().strip("/")
+        user_id = user_id.strip().strip("/")
+        job_id = job_id.strip().strip("/")
+        step = step.strip().strip("/").upper()
+        task_id = task_id.strip().strip("/")
+
+        if not re.match(r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", bucket):
             raise ValueError(f"Invalid bucket name: {bucket}")
-        if not re.match(r'^[a-zA-Z0-9_-]{1,128}$', user_id):
+        if not re.match(r"^[a-zA-Z0-9_-]{1,128}$", user_id):
             raise ValueError(f"Invalid user_id: {user_id}")
-        
-        if not re.match(r'^[a-zA-Z0-9_-]{1,128}$', job_id):
+
+        if not re.match(r"^[a-zA-Z0-9_-]{1,128}$", job_id):
             raise ValueError(f"Invalid job_id: {job_id}")
-        if not re.match(r'^[a-zA-Z0-9_-]{1,256}$', task_id):
+        if not re.match(r"^[a-zA-Z0-9_-]{1,256}$", task_id):
             raise ValueError(f"Invalid task_id: {task_id}")
-        
+
         if step not in VALID_STEPS:
             raise ValueError(f"Invalid step: {step}. Must be one of {VALID_STEPS}")
-        
-        if '..' in bucket or '..' in user_id or '..' in job_id or '..' in step or '..' in task_id:
+
+        if ".." in bucket or ".." in user_id or ".." in job_id or ".." in step or ".." in task_id:
             raise ValueError("Path traversal not allowed")
-        
+
         return f"s3://{bucket}/{user_id}/{job_id}/{step}/{task_id}/"
 
     @staticmethod
@@ -493,19 +493,19 @@ class SQSClient:
         """Build step-level output prefix (no task_id): s3://<bucket>/<user_id>/<job_id>/<step>/"""
         if not all([bucket, user_id, job_id, step]):
             raise ValueError("All parameters required: bucket, user_id, job_id, step")
-        bucket = bucket.strip().strip('/')
-        user_id = user_id.strip().strip('/')
-        job_id = job_id.strip().strip('/')
-        step = step.strip().strip('/').upper()
-        if not re.match(r'^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$', bucket):
+        bucket = bucket.strip().strip("/")
+        user_id = user_id.strip().strip("/")
+        job_id = job_id.strip().strip("/")
+        step = step.strip().strip("/").upper()
+        if not re.match(r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", bucket):
             raise ValueError(f"Invalid bucket name: {bucket}")
-        if not re.match(r'^[a-zA-Z0-9_-]{1,128}$', user_id):
+        if not re.match(r"^[a-zA-Z0-9_-]{1,128}$", user_id):
             raise ValueError(f"Invalid user_id: {user_id}")
-        if not re.match(r'^[a-zA-Z0-9_-]{1,128}$', job_id):
+        if not re.match(r"^[a-zA-Z0-9_-]{1,128}$", job_id):
             raise ValueError(f"Invalid job_id: {job_id}")
         if step not in VALID_STEPS:
             raise ValueError(f"Invalid step: {step}. Must be one of {VALID_STEPS}")
-        if '..' in bucket or '..' in user_id or '..' in job_id or '..' in step:
+        if ".." in bucket or ".." in user_id or ".." in job_id or ".." in step:
             raise ValueError("Path traversal not allowed")
         return f"s3://{bucket}/{user_id}/{job_id}/{step}/"
 
