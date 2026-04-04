@@ -115,7 +115,14 @@ class PostgresDB:
                 "psycopg is not installed. Add it to requirements and install before using io_db."
             )
         self._dsn = dsn or self._dsn_from_env(application_name)
-        self._pool: ConnectionPool = ConnectionPool(self._dsn, min_size=min_size, max_size=max_size)
+        # PgBouncer / Supabase poolers (transaction + session) share backends across clients;
+        # psycopg3's default prepared statements then cause DuplicatePreparedStatement.
+        self._pool: ConnectionPool = ConnectionPool(
+            self._dsn,
+            min_size=min_size,
+            max_size=max_size,
+            kwargs={"prepare_threshold": None},
+        )
 
     @staticmethod
     def _dsn_from_env(application_name: str) -> str:

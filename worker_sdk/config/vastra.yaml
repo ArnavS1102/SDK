@@ -13,6 +13,7 @@ queues:
   vton:           "vastra-dev-vton"
   avatar:         "vastra-dev-avatar"
   model_profile:  "vastra-dev-model-profile"
+  shot:           "vastra-dev-shot"
   results:        "vastra-dev-results"
   dlq:            "vastra-dev-dlq"
 
@@ -57,5 +58,12 @@ steps:
     extensions: [".png"]
     hooks_path: "services.model_profile.hooks.Hooks"
     queue: "model_profile"
+    next:
+      - AVATAR
+
+  SHOT_CREATION:
+    filetype: "png"
+    extensions: [".png", ".jpg", ".jpeg"]
+    queue: "shot"
     next:
       - AVATAR
