@@ -13,7 +13,7 @@ queues:
   vton:           "vastra-dev-vton"
   avatar:         "vastra-dev-avatar"
   model_profile:  "vastra-dev-model-profile"
-  shot:           "vastra-dev-shot"
+  shot:           "vastra-dev-shot-creation"
   results:        "vastra-dev-results"
   dlq:            "vastra-dev-dlq"
 
