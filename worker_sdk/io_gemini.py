@@ -22,6 +22,24 @@ from .logging import get_logger
 
 _gemini_log = get_logger("io_gemini")
 
+
+def _imagen_extract_b64(prediction: object) -> Optional[str]:
+    """Parse Vertex :predict prediction Value — flat JSON or protobuf-style struct."""
+    if not isinstance(prediction, dict):
+        return None
+    raw = prediction.get("bytesBase64Encoded")
+    if isinstance(raw, str):
+        return raw
+    fields = (prediction.get("structValue") or {}).get("fields") or prediction.get("fields")
+    if isinstance(fields, dict):
+        node = fields.get("bytesBase64Encoded")
+        if isinstance(node, dict):
+            return node.get("stringValue") or node.get("string_value")
+        if isinstance(node, str):
+            return node
+    return None
+
+
 # Optional: google-auth for Vertex AI ADC
 try:
     from google.auth import default
@@ -375,3 +393,57 @@ class GeminiClient:
                 if mime.startswith("image/"):
                     return base64.b64decode(inline.get("data", ""))
         raise RuntimeError(f"No image in response. Parts: {[list(p.keys()) for p in parts]}")
+
+    # ---- Imagen (text-to-image via :predict, not generateContent) ----
+    #
+    # Gemini image (MODEL_IMAGE) and Imagen are different APIs on Vertex:
+    #   - Gemini: .../models/gemini-*:generateContent
+    #   - Imagen: .../models/imagen-*:predict
+    # Same ADC / Bearer token; enable Imagen in your GCP project if requests fail.
+    # Docs: https://cloud.google.com/vertex-ai/generative-ai/docs/model-reference/imagen-api
+
+    def _build_predict_url(self, publisher_model_id: str) -> str:
+        return (
+            f"https://{self.location}-aiplatform.googleapis.com/v1/projects/"
+            f"{self.project}/locations/{self.location}/publishers/google/"
+            f"models/{publisher_model_id}:predict"
+        )
+
+    def generate_image_imagen(
+        self,
+        prompt: str,
+        *,
+        model: str = "imagen-3.0-generate-002",
+        aspect_ratio: str = "1:1",
+        sample_count: int = 1,
+        safety_filter_level: str = "block_some",
+        person_generation: str = "allow_adult",
+        language: str = "en",
+    ) -> bytes:
+        """Text-to-image using Imagen on Vertex (:predict). Returns first image bytes (PNG)."""
+        url = self._build_predict_url(model)
+        headers = {
+            "Authorization": f"Bearer {self.get_access_token()}",
+            "Content-Type": "application/json; charset=utf-8",
+        }
+        payload = {
+            "instances": [{"prompt": prompt}],
+            "parameters": {
+                "sampleCount": sample_count,
+                "aspectRatio": aspect_ratio,
+                "safetyFilterLevel": safety_filter_level,
+                "personGeneration": person_generation,
+                "language": language,
+            },
+        }
+        resp = requests.post(url, headers=headers, data=json.dumps(payload))
+        if resp.status_code != 200:
+            raise RuntimeError(f"Vertex Imagen predict error {resp.status_code}: {resp.text}")
+        data = resp.json()
+        preds = data.get("predictions") or []
+        if not preds:
+            raise RuntimeError(f"Imagen returned no predictions: {data}")
+        b64 = _imagen_extract_b64(preds[0])
+        if not b64:
+            raise RuntimeError(f"No image bytes in first prediction: {preds[0]!r}")
+        return base64.b64decode(b64)
