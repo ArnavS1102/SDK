@@ -109,8 +109,9 @@ for step_name, step_def in STEPS.items():
     if q_key and q_key in QUEUE_NAMES:
         QUEUE_URLS[step_name] = build_sqs_url(QUEUE_NAMES[q_key])
 
-# Add DLQ
-DLQ_URL = build_sqs_url(QUEUE_NAMES.get("dlq", "ytbot-dev-video-dlq"))
+# DLQ optional — only if ``queues.dlq`` exists in the active YAML.
+_dlq_name = QUEUE_NAMES.get("dlq")
+DLQ_URL = build_sqs_url(_dlq_name) if _dlq_name else ""
 
 # ============================================================================
 # DYNAMIC STEP INFO ACCESSORS

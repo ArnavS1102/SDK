@@ -25,6 +25,7 @@ from .constants import (
     VALID_STEPS,
     REQUIRED_MESSAGE_FIELDS,
     SUPPORTED_FILE_EXTENSIONS,
+    CPU_CONTRACT_STEPS,
 )
 
 
@@ -135,7 +136,9 @@ def validate_message(raw_message: Dict[str, Any], bucket_allowlist: List[str]) -
     
     if not validate_params(params):
         raise ValueError(f"Invalid params: too large, too deep, or contains non-JSON types")
-    
+
+    validate_cpu_step_param_contract(step, params)
+
     # Check fan-out parent requirement
     is_fanout = parent_task_id is not None
     if not validate_parent_task_id(parent_task_id, is_fanout):
@@ -403,6 +406,124 @@ def validate_params(params: Dict[str, Any], max_size_bytes: int = 65536, max_dep
         return False
     
     return True
+
+
+# ---------------------------------------------------------------------------
+# CPU step params (IMAGE_CPU / VIDEO_CPU / LIGHT_CPU) — allowlist + required keys
+# ---------------------------------------------------------------------------
+
+_IMAGE_CPU_PROVIDERS = frozenset({"vertex", "google", "bfl"})
+_VIDEO_CPU_PROVIDERS = frozenset({"vertex", "google"})
+
+
+_IMAGE_CPU_PARAM_KEYS = frozenset(
+    {
+        "prompt",
+        "model_id",
+        "mode",
+        "provider",
+        "reference_uri",
+        "aspect_ratio",
+        "spec_version",
+    }
+)
+_VIDEO_CPU_PARAM_KEYS = frozenset(
+    {
+        "prompt",
+        "model_id",
+        "provider",
+        "operation",
+        "vertex_operation_name",
+        "duration_s",
+        "spec_version",
+        "veo_aspect_ratio",
+        "video_resolution",
+        "negative_prompt",
+        "end_frame_uri",
+        "video_cue",
+        "poll_sec",
+        "max_wait_sec",
+        "video_generation",
+    }
+)
+_LIGHT_CPU_PARAM_KEYS = frozenset(
+    {
+        "operation",
+        "target_s3_uri",
+        "params_hint",
+        "spec_version",
+    }
+)
+
+
+def validate_cpu_step_param_contract(step: str, params: Dict[str, Any]) -> None:
+    """
+    Enforce bounded params for CPU-only steps. No-op for all other steps.
+    Raises ValueError on violation.
+    """
+    if step not in CPU_CONTRACT_STEPS:
+        return
+
+    if not isinstance(params, dict):
+        raise ValueError("params must be a dict")
+
+    if step == "IMAGE_CPU":
+        allowed = _IMAGE_CPU_PARAM_KEYS
+        _require_non_empty_str(params, "prompt", "IMAGE_CPU")
+        _require_non_empty_str(params, "model_id", "IMAGE_CPU")
+        mode = params.get("mode")
+        if mode is not None:
+            if not isinstance(mode, str) or mode not in ("t2i", "i2i"):
+                raise ValueError("IMAGE_CPU.params.mode must be 't2i' or 'i2i' if set")
+        prov = params.get("provider")
+        if prov is not None:
+            if not isinstance(prov, str) or prov.strip().lower() not in _IMAGE_CPU_PROVIDERS:
+                raise ValueError(
+                    f"IMAGE_CPU.params.provider must be one of {sorted(_IMAGE_CPU_PROVIDERS)} if set"
+                )
+    elif step == "VIDEO_CPU":
+        allowed = _VIDEO_CPU_PARAM_KEYS
+        pr = params.get("prompt")
+        vc = params.get("video_cue")
+        if not (
+            (isinstance(pr, str) and pr.strip())
+            or (isinstance(vc, str) and vc.strip())
+        ):
+            raise ValueError("VIDEO_CPU.params.prompt and/or params.video_cue: at least one non-empty string is required")
+        _require_non_empty_str(params, "model_id", "VIDEO_CPU")
+        prov = params.get("provider")
+        if prov is not None:
+            if not isinstance(prov, str) or prov.strip().lower() not in _VIDEO_CPU_PROVIDERS:
+                raise ValueError(
+                    f"VIDEO_CPU.params.provider must be one of {sorted(_VIDEO_CPU_PROVIDERS)} if set"
+                )
+        ds = params.get("duration_s")
+        if ds is not None and not isinstance(ds, (int, float)):
+            raise ValueError("VIDEO_CPU.params.duration_s must be a number if set")
+        ps = params.get("poll_sec")
+        if ps is not None and not isinstance(ps, (int, float)):
+            raise ValueError("VIDEO_CPU.params.poll_sec must be a number if set")
+        mw = params.get("max_wait_sec")
+        if mw is not None and not isinstance(mw, (int, float)):
+            raise ValueError("VIDEO_CPU.params.max_wait_sec must be a number if set")
+        vg = params.get("video_generation")
+        if vg is not None and not isinstance(vg, dict):
+            raise ValueError("VIDEO_CPU.params.video_generation must be an object if set")
+    elif step == "LIGHT_CPU":
+        allowed = _LIGHT_CPU_PARAM_KEYS
+        _require_non_empty_str(params, "operation", "LIGHT_CPU")
+    else:
+        return
+
+    extra = set(params.keys()) - allowed
+    if extra:
+        raise ValueError(f"{step}: unknown params keys: {sorted(extra)}")
+
+
+def _require_non_empty_str(params: Dict[str, Any], key: str, step: str) -> None:
+    v = params.get(key)
+    if not isinstance(v, str) or not v.strip():
+        raise ValueError(f"{step}.params.{key} must be a non-empty string")
 
 
 def validate_user_id(user_id: str) -> bool:

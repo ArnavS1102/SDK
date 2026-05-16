@@ -1,46 +1,28 @@
-# config.yaml
+# config.yaml — **ytbot** (CPU Lambdas).
+# ``queues`` lists only queues that exist in AWS. Every ``steps.*.queue`` value must be a key here.
 
 aws:
   account_id: "581867121448"
   region: "us-east-1"
-  work_bucket: "my-s3io-tests"
+  work_bucket: "mylostudio-content"
 
 queues:
-  script:  "ytbot-dev-video-script-requested"
-  image:   "ytbot-dev-video-image-requested"
-  animate: "ytbot-dev-video-animate-requested"
-  tts:     "ytbot-dev-video-tts-requested"
-  stitch:  "ytbot-dev-video-stitch-requested"
-  dlq:     "ytbot-dev-video-dlq"
+  image:     "ytbot-dev-video-image-requested"
+  animate:   "ytbot-dev-video-animate-requested"
+  cpu_light: "ytbot-dev-cpu-light"
 
 steps:
-  SCRIPT_GENERATION:
-    filetype: "json"
-    extensions: [".json"]
-    next:
-      - IMAGE_GENERATION
-      - SPEECH_GENERATION
-    queue: "script"
-
-  IMAGE_GENERATION:
+  IMAGE_CPU:
     filetype: "png"
-    extensions: [".png", ".json"]
-    next:
-      - VIDEO_GENERATION
+    extensions: [".png", ".jpg", ".jpeg", ".json", ".webp"]
     queue: "image"
 
-  VIDEO_GENERATION:
+  VIDEO_CPU:
     filetype: "mp4"
-    extensions: [".mp4", ".json"]
-    join_to: "STITCH"
+    extensions: [".mp4", ".json", ".webm"]
     queue: "animate"
 
-  SPEECH_GENERATION:
-    filetype: "mp3"
-    extensions: [".mp3", ".wav", ".json"]
-    queue: "tts"
-
-  STITCH:
-    filetype: "mp4"
-    extensions: [".mp4", ".json"]
-    queue: "stitch"
+  LIGHT_CPU:
+    filetype: "json"
+    extensions: [".json", ".png", ".jpg", ".jpeg"]
+    queue: "cpu_light"

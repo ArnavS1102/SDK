@@ -20,7 +20,6 @@ from .io_sqs import SQSClient
 from .logging import get_logger
 from .message import validate_message
 from .idempotency import result_exists
-from .io_db import PostgresDB, TaskRecord
 
 
 # ==========================================================
@@ -201,14 +200,6 @@ def main(step: str, log_level: str = "INFO", hooks_path: str = None):
     # Initialize I/O adapters
     storage = S3Storage()
     sqs_client = SQSClient(region=CONFIG["aws"]["region"])
-    # Initialize DB (best-effort)
-    db = None
-    try:
-        db = PostgresDB()
-        db.migrate()
-        logger.info("DB ready ✓")
-    except Exception as e:
-        logger.warning("DB unavailable - proceeding without persistence", {"error": str(e)})
 
     # Load hooks
     import importlib
@@ -229,7 +220,7 @@ def main(step: str, log_level: str = "INFO", hooks_path: str = None):
                 continue
 
             for raw in msgs:
-                _process(storage, sqs_client, raw, step, hooks, logger, queue_url, db)
+                _process(storage, sqs_client, raw, step, hooks, logger, queue_url)
 
         except KeyboardInterrupt:
             logger.info("Graceful shutdown (Ctrl+C)")
@@ -243,8 +234,8 @@ def main(step: str, log_level: str = "INFO", hooks_path: str = None):
 # ==========================================================
 
 def _process(storage: S3Storage, sqs_client: SQSClient, raw_msg: Dict[str, Any],
-             step: str, hooks, logger, queue_url: str, db: PostgresDB = None):
-    """Process one message through the full pipeline."""
+             step: str, hooks, logger, queue_url: str):
+    """Process one message through the full pipeline (SQS + S3 only; no Postgres)."""
     receipt = None
     task_id = "unknown"
 
@@ -288,37 +279,6 @@ def _process(storage: S3Storage, sqs_client: SQSClient, raw_msg: Dict[str, Any],
         visibility_timeout = max(60, min(int(visibility_timeout), 43200))  # 1 min to 12h (SQS max)
         heartbeat_every = max(30, visibility_timeout // 4)
 
-        # Persist job/task (best-effort)
-        if db:
-            try:
-                db.create_or_get_job(
-                    job_id=job_id,
-                    user_id=validated.user_id,
-                    schema=validated.schema,
-                    status="QUEUED",
-                    trace_id=validated.trace_id,
-                    attrs={},
-                )
-                # TODO: Update job status based on task lifecycle:
-                # - Set job to RUNNING when first task starts
-                # - Set job to SUCCEEDED when all tasks complete
-                # - Set job to FAILED if any task fails
-                # Need to query all tasks for a job to determine completion status
-                db.upsert_task(task=TaskRecord(
-                    task_id=validated.task_id,
-                    job_id=validated.job_id,
-                    user_id=validated.user_id,
-                    step=validated.step,
-                    status="QUEUED",
-                    retry_count=int(validated.retry_count or 0),
-                    parent_task_id=validated.parent_task_id,
-                    input_uri=validated.input_uri,
-                    output_prefix=validated.output_prefix,
-                    params=validated.params,
-                ))
-            except Exception as e:
-                log.warning("DB upsert failed (continuing)", {"error": str(e)})
-
         # Skip poison pill logic for simplicity (per-slot for fan-out steps)
         log.info("Checking if task already completed (idempotency check)...")
         if result_exists(storage, step_prefix, task_id=validated.task_id):
@@ -327,11 +287,6 @@ def _process(storage: S3Storage, sqs_client: SQSClient, raw_msg: Dict[str, Any],
             return
 
         log.info("Processing task...")
-        if db:
-            try:
-                db.set_task_started(task_id=task_id)
-            except Exception as e:
-                log.warning("DB set_task_started failed", {"error": str(e)})
         # Build task context
         task_ctx = {"config": {"work_bucket": WORK_BUCKET, "step": step}, "logger": log, "storage": storage}
 
@@ -342,19 +297,6 @@ def _process(storage: S3Storage, sqs_client: SQSClient, raw_msg: Dict[str, Any],
             outputs = hooks.process(task_ctx, validated)
 
             write_info = _write_outputs(storage, step_prefix, step, outputs, validated.task_id)
-            if db:
-                try:
-                    db.save_task_result(
-                        task_id=task_id,
-                        primary_result_uri=write_info.get("primary_result_uri"),
-                        metrics_uri=write_info.get("metrics_uri"),
-                        primary_mime=write_info.get("primary_mime"),
-                        primary_size_bytes=write_info.get("primary_size_bytes"),
-                        extra=write_info.get("extra"),
-                    )
-                    db.set_task_succeeded(task_id=task_id)
-                except Exception as e:
-                    log.warning("DB save_task_result/set_task_succeeded failed", {"error": str(e)})
             _publish_results_completion(
                 sqs_client, log, _results_completion_payload(validated, write_info)
             )
@@ -365,11 +307,6 @@ def _process(storage: S3Storage, sqs_client: SQSClient, raw_msg: Dict[str, Any],
 
     except Exception as e:
         logger.error(e, {"context": "process", "task_id": task_id})
-        try:
-            if db and task_id != "unknown":
-                db.set_task_failed(task_id=task_id, error_code="PROCESS_ERROR", error_message=str(e))
-        except Exception:
-            pass
 
 
 # ==========================================================

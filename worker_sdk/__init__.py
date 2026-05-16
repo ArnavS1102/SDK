@@ -1,4 +1,9 @@
-"""Worker SDK: DB records, work-queue message contract, and Postgres adapter."""
+"""
+Worker SDK: shared work-queue contract, Postgres, S3/SQS I/O, Lambda+SQS helpers.
+
+Import submodules explicitly in hot paths (e.g. ``worker_sdk.io_s3``). This package root
+does **not** import ``runner`` or ``hooks`` (GPU worker entrypoints).
+"""
 
 from worker_sdk.pipeline_s3_paths import (
     STEP_MODEL_PROFILE,
@@ -14,6 +19,7 @@ from worker_sdk.io_db import (
     validate_job_status,
     validate_task_status,
 )
+from worker_sdk.io_lambda import ParsedSqsRecord, parse_sqs_event, partial_batch_response
 from worker_sdk.work_queue_message import (
     WORK_QUEUE_MESSAGE_KEYS,
     WORK_QUEUE_MESSAGE_VERSION,
@@ -50,4 +56,7 @@ __all__ = [
     "prepare_task_uris",
     "validate_job_status",
     "validate_task_status",
+    "ParsedSqsRecord",
+    "parse_sqs_event",
+    "partial_batch_response",
 ]

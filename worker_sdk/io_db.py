@@ -517,6 +517,40 @@ class PostgresDB:
             cur.execute(sql, (task_id,))
             conn.commit()
 
+    def try_claim_task(
+        self,
+        *,
+        task_id: str,
+        from_statuses: Tuple[str, ...] = ("QUEUED",),
+    ) -> bool:
+        """
+        Atomically move a task from a queued-like status to STARTED.
+
+        Used by SQS-triggered Lambdas (at-least-once): only the first claim wins.
+        Returns True if this invocation claimed the row (1 row updated).
+        """
+        if not from_statuses:
+            raise ValueError("from_statuses must be non-empty")
+        for s in from_statuses:
+            if not validate_task_status(s):
+                raise ValueError(f"Invalid from_statuses entry: {s}")
+        placeholders = ", ".join(["%s"] * len(from_statuses))
+        sql = f"""
+        UPDATE tasks
+        SET status = 'STARTED',
+            started_at = COALESCE(started_at, NOW()),
+            updated_at = NOW()
+        WHERE task_id = %s
+          AND status IN ({placeholders})
+        RETURNING task_id;
+        """
+        params: Tuple[Any, ...] = (task_id,) + tuple(from_statuses)
+        with self._pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, params)
+            row = cur.fetchone()
+            conn.commit()
+        return row is not None
+
     def set_task_succeeded(self, *, task_id: str) -> None:
         sql = "UPDATE tasks SET status='SUCCEEDED', finished_at=NOW(), updated_at=NOW() WHERE task_id=%s;"
         with self._pool.connection() as conn, conn.cursor() as cur:

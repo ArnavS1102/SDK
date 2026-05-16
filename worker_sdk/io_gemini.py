@@ -3,7 +3,7 @@ Gemini API client for Vertex AI.
 
 Provides:
 - Text/analysis: image-to-text (gemini-2.5-pro)
-- Image generation: image-to-image (gemini-2.5-flash-image)
+- Image generation: Vertex ``generateContent`` with IMAGE modality (default model ``gemini-2.5-flash-image``; override via ``model``).
 """
 
 from __future__ import annotations
@@ -86,7 +86,7 @@ class GeminiClient:
     """Unified client for Google Gemini API via Vertex AI.
 
     1. Text/analysis (image-to-text) using gemini-2.5-pro
-    2. Image generation (image-to-image) using gemini-2.5-flash-image
+    2. Image generation (t2i / i2i) via ``generateContent``; default image model ``gemini-2.5-flash-image``.
     """
 
     MODEL_TEXT = "gemini-2.5-pro"
@@ -357,11 +357,18 @@ class GeminiClient:
         image_input: Optional[Union[str, bytes, List[str], List[bytes]]] = None,
         aspect_ratio: str = "1:1",
         temperature: float = 0.7,
+        *,
+        model: Optional[str] = None,
     ) -> bytes:
-        """Image-to-image: generate image with gemini-2.5-flash-image."""
+        """Image generation via Vertex ``generateContent`` (IMAGE modality).
+
+        ``model`` is the Vertex publisher model id (e.g. ``gemini-2.5-flash-image``,
+        ``gemini-2.5-flash-image-preview``). Defaults to :attr:`MODEL_IMAGE` when omitted or blank.
+        """
         if aspect_ratio not in self.ASPECT_RATIOS:
             raise ValueError(f"Unsupported aspect_ratio: {aspect_ratio}. Supported: {list(self.ASPECT_RATIOS.keys())}")
-        url = self._build_api_url(self.MODEL_IMAGE)
+        image_model = (model or "").strip() or self.MODEL_IMAGE
+        url = self._build_api_url(image_model)
         headers = {
             "Authorization": f"Bearer {self.get_access_token()}",
             "Content-Type": "application/json; charset=utf-8",

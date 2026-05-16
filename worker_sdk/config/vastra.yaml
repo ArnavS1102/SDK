@@ -16,6 +16,10 @@ queues:
   shot:           "vastra-dev-shot-creation"
   results:        "vastra-dev-results"
   dlq:            "vastra-dev-dlq"
+  # CPU-only (Lambda consumers). Create these queues in AWS to match names.
+  cpu_image:      "vastra-dev-cpu-image"
+  cpu_video:      "vastra-dev-cpu-video"
+  cpu_light:      "vastra-dev-cpu-light"
 
 steps:
   ENHANCEMENT:
@@ -67,3 +71,19 @@ steps:
     queue: "shot"
     next:
       - AVATAR
+
+  # CPU contract steps — consumed by Lambda (not GPU runner). No hooks_path.
+  IMAGE_CPU:
+    filetype: "png"
+    extensions: [".png", ".jpg", ".jpeg", ".json", ".webp"]
+    queue: "cpu_image"
+
+  VIDEO_CPU:
+    filetype: "mp4"
+    extensions: [".mp4", ".json", ".webm"]
+    queue: "cpu_video"
+
+  LIGHT_CPU:
+    filetype: "json"
+    extensions: [".json", ".png", ".jpg", ".jpeg"]
+    queue: "cpu_light"

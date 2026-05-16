@@ -105,6 +105,9 @@ QUEUE_NAMES = CONFIG["queues"]
 # Dynamic VALID_STEPS (loaded from YAML)
 VALID_STEPS = list(STEPS.keys())
 
+# CPU-only work-queue steps (same names must exist under `steps:` in config YAML).
+CPU_CONTRACT_STEPS = frozenset({"IMAGE_CPU", "VIDEO_CPU", "LIGHT_CPU"})
+
 def build_sqs_url(queue_name: str) -> str:
     """Construct SQS URL from queue name + account + region."""
     return f"https://sqs.{AWS_REGION}.amazonaws.com/{AWS_ACCOUNT_ID}/{queue_name}"
@@ -116,8 +119,9 @@ for step_name, step_def in STEPS.items():
     if q_key and q_key in QUEUE_NAMES:
         QUEUE_URLS[step_name] = build_sqs_url(QUEUE_NAMES[q_key])
 
-# Add DLQ
-DLQ_URL = build_sqs_url(QUEUE_NAMES.get("dlq", "ytbot-dev-video-dlq"))
+# DLQ optional — only if ``queues.dlq`` exists in the active YAML.
+_dlq_name = QUEUE_NAMES.get("dlq")
+DLQ_URL = build_sqs_url(_dlq_name) if _dlq_name else ""
 
 # ============================================================================
 # DYNAMIC STEP INFO ACCESSORS
