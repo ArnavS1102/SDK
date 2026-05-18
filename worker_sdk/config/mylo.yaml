@@ -1,0 +1,18 @@
+# CPU Lambdas + optional results/DLQ — `WORKER_CONFIG=mylo`.
+# Only queues that exist in AWS are listed. Add `cpu_video` / `cpu_light` and matching
+# `VIDEO_CPU` / `LIGHT_CPU` steps when you create those queues and enable the video Lambda in Terraform.
+
+aws:
+  region: "us-east-1"
+  work_bucket: "mylostudio-content"
+
+queues:
+  results:   "mylo-dev-results"
+  dlq:      "mylo-dev-dlq"
+  cpu_image: "mylo-dev-cpu-image"
+
+steps:
+  IMAGE_CPU:
+    filetype: "png"
+    extensions: [".png", ".jpg", ".jpeg", ".json", ".webp"]
+    queue: "cpu_image"

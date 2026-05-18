@@ -65,12 +65,12 @@ def load_config(path: str = None) -> Dict[str, Any]:
     
     Environment Variable:
         WORKER_CONFIG: Name of config file (without .yaml extension)
-        Examples: WORKER_CONFIG=vastra -> loads config/vastra.yaml
+        Examples: WORKER_CONFIG=mylo -> loads config/mylo.yaml
                   WORKER_CONFIG=production -> loads config/production.yaml
     
     Examples:
-        export WORKER_CONFIG=vastra
-        python worker.py  # Uses config/vastra.yaml
+        export WORKER_CONFIG=mylo
+        python worker.py  # Uses config/mylo.yaml
     """
     if path is None:
         # Use environment-based config name

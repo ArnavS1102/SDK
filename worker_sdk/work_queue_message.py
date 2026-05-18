@@ -29,7 +29,8 @@ Work-queue SQS message contract — **single source of truth** in this module.
 
 7. **S3 URIs** (``input_uri``, ``output_prefix``) — Caller passes ``expected_bucket``
    (e.g. ``WORK_BUCKET`` env); must match the bucket in the URI:
-   - Scheme ``s3://``, non-empty bucket, non-empty key path.
+   - **input_uri** may be empty for steps that do not read an input object (e.g.
+     IMAGE_CPU ``t2i``). Otherwise scheme ``s3://``, non-empty bucket, non-empty key path.
    - Bucket name must match the conservative pattern ``_BUCKET_RE`` (3–63 chars,
      typical AWS rules subset).
    - Bucket in the URI must **equal** ``expected_bucket``.
@@ -176,9 +177,11 @@ def prepare_task_uris(
 ) -> Tuple[str, str, str]:
     """Returns ``(job_id, input_uri, output_prefix)`` normalized for tasks + SQS."""
     jid = normalize_job_id(job_id)
-    inp = normalize_s3_uri(
-        input_uri.strip(), role="input_uri", expected_bucket=expected_bucket
-    )
+    u = (input_uri or "").strip()
+    if not u:
+        inp = ""
+    else:
+        inp = normalize_s3_uri(u, role="input_uri", expected_bucket=expected_bucket)
     out = normalize_s3_uri(
         output_prefix.strip(), role="output_prefix", expected_bucket=expected_bucket
     )

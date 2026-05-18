@@ -15,7 +15,9 @@ Notes:
 
 from __future__ import annotations
 
+import json
 import os
+import urllib.parse
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -125,10 +127,44 @@ class PostgresDB:
         )
 
     @staticmethod
+    def _dsn_from_rds_secrets_manager_json(db_url: str, application_name: str) -> str:
+        """
+        AWS RDS / Secrets Manager often stores ``{"username","password"}`` (sometimes plus host/port/dbname).
+        When host is omitted, set ``PGHOST`` (and optionally ``PGPORT``, ``PGDATABASE``) in the environment.
+        """
+        data = json.loads(db_url)
+        if not isinstance(data, dict):
+            raise RuntimeError("DB_URL must be a JSON object when using RDS-style Secrets Manager values")
+        user = data.get("username") or data.get("user")
+        password = data.get("password")
+        if user is None or password is None:
+            raise RuntimeError("RDS-style DB_URL JSON must include username and password")
+        host = data.get("host") or os.getenv("PGHOST")
+        port = str(data.get("port") or os.getenv("PGPORT") or "5432")
+        dbname = (
+            data.get("dbname")
+            or data.get("database")
+            or os.getenv("PGDATABASE")
+            or "postgres"
+        )
+        if not host:
+            raise RuntimeError(
+                "DB_URL JSON has no host; set PGHOST (and optionally PGPORT, PGDATABASE) alongside the secret"
+            )
+        uq = urllib.parse.quote(str(user), safe="")
+        pq = urllib.parse.quote(str(password), safe="")
+        aq = urllib.parse.quote(application_name, safe="")
+        base = f"postgresql://{uq}:{pq}@{host}:{port}/{dbname}?sslmode=require&application_name={aq}"
+        return base
+
+    @staticmethod
     def _dsn_from_env(application_name: str) -> str:
         # Check for DB_URL first (from .env or environment)
         db_url = os.getenv("DB_URL")
         if db_url:
+            stripped = db_url.strip()
+            if stripped.startswith("{"):
+                return PostgresDB._dsn_from_rds_secrets_manager_json(stripped, application_name)
             # Use DB_URL directly - psycopg accepts both URL and key-value formats
             # If it's a URL format, try to append application_name
             if (db_url.startswith("postgresql://") or db_url.startswith("postgres://")) and "application_name" not in db_url:
@@ -363,6 +399,26 @@ class PostgresDB:
             cur.execute(sql, (status, job_id))
             conn.commit()
 
+    def sync_job_status_from_tasks(self, *, job_id: str, limit: int = 500) -> None:
+        """
+        Roll up ``jobs.status`` from terminal / in-flight ``tasks`` rows (single-job polling).
+
+        Rules: any ``FAILED`` or ``DLQ`` task → job ``FAILED``; all ``SUCCEEDED`` → ``SUCCEEDED``;
+        otherwise → ``RUNNING``. No-op when there are no tasks.
+        """
+        tasks = self.list_tasks(job_id=job_id, limit=limit)
+        if not tasks:
+            return
+        if any(t.status in ("FAILED", "DLQ") for t in tasks):
+            computed = "FAILED"
+        elif all(t.status == "SUCCEEDED" for t in tasks):
+            computed = "SUCCEEDED"
+        elif any(t.status in ("QUEUED", "STARTED", "RETRIED") for t in tasks):
+            computed = "RUNNING"
+        else:
+            computed = "RUNNING"
+        self.update_job_status(job_id=job_id, status=computed)
+
     # -----------------------------------------------------------------------
     # Task operations
     # -----------------------------------------------------------------------
@@ -457,7 +513,11 @@ class PostgresDB:
             error_code = EXCLUDED.error_code,
             error_message = EXCLUDED.error_message,
             params = EXCLUDED.params,
-            updated_at = NOW();
+            updated_at = NOW(),
+            finished_at = CASE
+                WHEN EXCLUDED.status IN ('SUCCEEDED', 'FAILED', 'CANCELLED', 'DLQ') THEN NOW()
+                ELSE tasks.finished_at
+            END;
         """
         result_sql = """
         INSERT INTO task_results (

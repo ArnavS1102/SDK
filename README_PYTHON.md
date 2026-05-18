@@ -22,9 +22,9 @@ The SDK supports multiple configuration files. Set the `WORKER_CONFIG` environme
 # Use default configuration
 python worker.py  # Uses config/default.yaml
 
-# Use vastra configuration  
-export WORKER_CONFIG=vastra
-python worker.py  # Uses config/vastra.yaml
+# Use mylo configuration (CPU Lambdas + queues in this repo)
+export WORKER_CONFIG=mylo
+python worker.py  # Uses config/mylo.yaml
 
 # Use production configuration
 export WORKER_CONFIG=production
@@ -32,9 +32,8 @@ python worker.py  # Uses config/production.yaml
 ```
 
 **Available configs:**
-- `default` → `config/default.yaml`
-- `vastra` → `config/vastra.yaml`
-- `ytbot` → `config/ytbot.yaml`
+- `default` → `config/default.yaml` (if present in your install)
+- `mylo` → `config/mylo.yaml` (CPU Lambdas + SQS queue names for this repo)
 
 ---
 
