@@ -508,11 +508,17 @@ class PostgresDB:
         )
         VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         ON CONFLICT (task_id) DO UPDATE SET
+            job_id = EXCLUDED.job_id,
+            user_id = EXCLUDED.user_id,
+            step = EXCLUDED.step,
             status = EXCLUDED.status,
             retry_count = EXCLUDED.retry_count,
+            parent_task_id = EXCLUDED.parent_task_id,
+            input_uri = EXCLUDED.input_uri,
+            output_prefix = EXCLUDED.output_prefix,
+            params = EXCLUDED.params,
             error_code = EXCLUDED.error_code,
             error_message = EXCLUDED.error_message,
-            params = EXCLUDED.params,
             updated_at = NOW(),
             finished_at = CASE
                 WHEN EXCLUDED.status IN ('SUCCEEDED', 'FAILED', 'CANCELLED', 'DLQ') THEN NOW()
