@@ -209,7 +209,9 @@ def assemble_work_queue_message(
         output_prefix=output_prefix,
         expected_bucket=expected_bucket,
     )
-    tid = (task_id or "").strip() or "S0"
+    from worker_sdk.task_ids import scope_task_id
+
+    tid = scope_task_id(jid, (task_id or "").strip() or "S0")
     uid = (user_id or "").strip()
     if not uid:
         raise ValueError("user_id must be non-empty")

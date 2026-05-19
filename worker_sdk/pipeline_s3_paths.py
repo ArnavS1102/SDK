@@ -15,6 +15,8 @@ Layout (all steps):
 
 from __future__ import annotations
 
+from worker_sdk.task_ids import task_path_segment
+
 STEP_MODEL_PROFILE = "MODEL_PROFILE"
 
 
@@ -33,7 +35,7 @@ def pipeline_step_base_prefix(
     u = (user_id or "").strip()
     j = (job_id or "").strip()
     st = (step or "").strip().upper()
-    tid = (task_id or "").strip() or "S0"
+    tid = task_path_segment(task_id, job_id)
     b = (bucket or "").strip()
     if not b or not u or not j or not st:
         raise ValueError("bucket, user_id, job_id, and step are required")

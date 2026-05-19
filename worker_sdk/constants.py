@@ -163,8 +163,11 @@ def get_hooks_path(step: str) -> Optional[str]:
 # ============================================================================
 
 def make_output_prefix(user_id: str, job_id: str, step: str, task_id: str) -> str:
-    """Standard S3 prefix convention."""
-    return f"s3://{WORK_BUCKET}/{user_id}/{job_id}/{step}/{task_id}/"
+    """Standard S3 prefix convention (path segment is slot ``S0``, not full scoped task id)."""
+    from worker_sdk.task_ids import task_path_segment
+
+    seg = task_path_segment(task_id, job_id)
+    return f"s3://{WORK_BUCKET}/{user_id}/{job_id}/{step}/{seg}/"
 
 # ============================================================================
 # EXAMPLE USAGE

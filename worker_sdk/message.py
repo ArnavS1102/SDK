@@ -112,7 +112,13 @@ def validate_message(raw_message: Dict[str, Any], bucket_allowlist: List[str]) -
     
     if not validate_job_id(job_id):
         raise ValueError(f"Invalid job_id: {job_id}")
-    
+
+    from worker_sdk.task_ids import scope_task_id
+
+    task_id = scope_task_id(job_id, task_id)
+    if parent_task_id is not None:
+        parent_task_id = scope_task_id(job_id, parent_task_id)
+
     if not validate_task_id(task_id):
         raise ValueError(f"Invalid task_id: {task_id}")
     
@@ -350,10 +356,13 @@ def validate_output_prefix(output_prefix: str, bucket: str, user_id: str, job_id
     if output_prefix == step_only:
         return True
 
-    # Accept step + task_id: s3://bucket/user_id/job_id/step/task_id/
-    step_with_task = f"s3://{bucket}/{user_id}/{job_id}/{step}/{task_id}/"
-    if output_prefix == step_with_task:
-        return True
+    from worker_sdk.task_ids import task_path_segment
+
+    seg = task_path_segment(task_id, job_id)
+    for folder in (seg, task_id):
+        step_with_task = f"s3://{bucket}/{user_id}/{job_id}/{step}/{folder}/"
+        if output_prefix == step_with_task:
+            return True
 
     return False
 

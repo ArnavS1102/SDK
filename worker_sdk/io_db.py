@@ -328,7 +328,10 @@ class PostgresDB:
         INSERT INTO jobs (job_id, user_id, schema, status, trace_id, attrs)
         VALUES (%s, %s, %s, %s, %s, %s)
         ON CONFLICT (job_id)
-        DO UPDATE SET updated_at = NOW()
+        DO UPDATE SET
+            status = EXCLUDED.status,
+            user_id = EXCLUDED.user_id,
+            updated_at = NOW()
         RETURNING job_id, user_id, schema, status, trace_id, COALESCE(attrs, '{}'::jsonb);
         """
         task_sql = """
@@ -338,8 +341,14 @@ class PostgresDB:
         )
         VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         ON CONFLICT (task_id) DO UPDATE SET
+            job_id = EXCLUDED.job_id,
+            user_id = EXCLUDED.user_id,
+            step = EXCLUDED.step,
+            input_uri = EXCLUDED.input_uri,
+            output_prefix = EXCLUDED.output_prefix,
             status = EXCLUDED.status,
             retry_count = EXCLUDED.retry_count,
+            parent_task_id = EXCLUDED.parent_task_id,
             error_code = EXCLUDED.error_code,
             error_message = EXCLUDED.error_message,
             params = EXCLUDED.params,
@@ -436,8 +445,14 @@ class PostgresDB:
         )
         VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         ON CONFLICT (task_id) DO UPDATE SET
+            job_id = EXCLUDED.job_id,
+            user_id = EXCLUDED.user_id,
+            step = EXCLUDED.step,
+            input_uri = EXCLUDED.input_uri,
+            output_prefix = EXCLUDED.output_prefix,
             status = EXCLUDED.status,
             retry_count = EXCLUDED.retry_count,
+            parent_task_id = EXCLUDED.parent_task_id,
             error_code = EXCLUDED.error_code,
             error_message = EXCLUDED.error_message,
             params = EXCLUDED.params,
@@ -576,6 +591,19 @@ class PostgresDB:
                         )
                     if after_writes is not None:
                         after_writes(cur)
+                    self._delete_legacy_slot_task_result(cur, task)
+
+    def _delete_legacy_slot_task_result(self, cur: Any, task: TaskRecord) -> None:
+        """Drop bare ``S0`` result rows after writing a scoped task id (prevents cross-job bleed)."""
+        from worker_sdk.task_ids import task_path_segment
+
+        slot = task_path_segment(task.task_id, task.job_id)
+        if not slot or slot == task.task_id:
+            return
+        cur.execute(
+            "DELETE FROM task_results WHERE task_id = %s AND task_id <> %s;",
+            (slot, task.task_id),
+        )
 
     def set_task_started(self, *, task_id: str) -> None:
         sql = "UPDATE tasks SET status='STARTED', started_at=NOW(), updated_at=NOW() WHERE task_id=%s;"

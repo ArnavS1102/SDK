@@ -5,6 +5,11 @@ Import submodules explicitly in hot paths (e.g. ``worker_sdk.io_s3``). This pack
 does **not** import ``runner`` or ``hooks`` (GPU worker entrypoints).
 """
 
+from worker_sdk.task_ids import (
+    scope_task_id,
+    task_path_segment,
+    task_result_lookup_keys,
+)
 from worker_sdk.pipeline_s3_paths import (
     STEP_MODEL_PROFILE,
     model_profile_uris,
@@ -35,6 +40,9 @@ from worker_sdk.work_queue_message import (
 )
 
 __all__ = [
+    "scope_task_id",
+    "task_path_segment",
+    "task_result_lookup_keys",
     "STEP_MODEL_PROFILE",
     "model_profile_uris",
     "pipeline_step_base_prefix",

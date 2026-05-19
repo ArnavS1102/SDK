@@ -546,7 +546,12 @@ def _emit_children(storage: S3Storage, sqs_client: SQSClient,
             # When parent emits a single child (e.g. enhancement S1 -> one analysis), child must keep parent's slot so DB gets job_id-S1 not job_id-S0
             if explicit_idx is None and len(children) == 1 and getattr(parent_task, "task_id", None):
                 explicit_idx = _slot_index_from_task_id(parent_task.task_id)
-            child_task_id = _det_task_id(next_step, idx, explicit_idx)
+            from worker_sdk.task_ids import scope_task_id
+
+            child_task_id = scope_task_id(
+                parent_task.job_id,
+                _det_task_id(next_step, idx, explicit_idx),
+            )
             child_prefix = make_output_prefix(parent_task.user_id, parent_task.job_id, next_step, child_task_id)
             
             # Convert child_data to params dict
