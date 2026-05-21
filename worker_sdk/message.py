@@ -441,6 +441,7 @@ _VIDEO_CPU_PARAM_KEYS = frozenset(
         "prompt",
         "model_id",
         "provider",
+        "mode",
         "operation",
         "vertex_operation_name",
         "duration_s",
@@ -500,6 +501,10 @@ def validate_cpu_step_param_contract(step: str, params: Dict[str, Any]) -> None:
         ):
             raise ValueError("VIDEO_CPU.params.prompt and/or params.video_cue: at least one non-empty string is required")
         _require_non_empty_str(params, "model_id", "VIDEO_CPU")
+        vmode = params.get("mode")
+        if vmode is not None:
+            if not isinstance(vmode, str) or vmode.strip().lower() not in ("t2v", "i2v"):
+                raise ValueError("VIDEO_CPU.params.mode must be 't2v' or 'i2v' if set")
         prov = params.get("provider")
         if prov is not None:
             if not isinstance(prov, str) or prov.strip().lower() not in _VIDEO_CPU_PROVIDERS:
