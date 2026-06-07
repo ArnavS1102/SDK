@@ -1,0 +1,21 @@
+aws:
+  region: "us-east-1"
+  work_bucket: "content-repurpose"
+
+queues:
+  ingest: "content-repurpose-ingest"
+  transcribe: "content-repurpose-transcribe"
+
+steps:
+  INGEST:
+    filetype: "mp3"
+    extensions: [".mp4", ".mp3", ".wav", ".json"]
+    queue: "ingest"
+    next: ["TRANSCRIBE"]
+    hooks_path: "service.hooks.IngestHooks"
+
+  TRANSCRIBE:
+    filetype: "json"
+    extensions: [".mp3", ".wav", ".mp4", ".json"]
+    queue: "transcribe"
+    hooks_path: "service.hooks.TranscribeHooks"

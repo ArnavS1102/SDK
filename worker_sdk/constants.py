@@ -61,20 +61,20 @@ def load_config(path: str = None) -> Dict[str, Any]:
     Config selection priority:
     1. Explicit path parameter
     2. WORKER_CONFIG environment variable
-    3. Default to 'default.yaml'
+    3. Default to 'content_repurpose.yaml'
     
     Environment Variable:
         WORKER_CONFIG: Name of config file (without .yaml extension)
-        Examples: WORKER_CONFIG=mylo -> loads config/mylo.yaml
+        Examples: WORKER_CONFIG=content_repurpose -> loads config/content_repurpose.yaml
                   WORKER_CONFIG=production -> loads config/production.yaml
     
     Examples:
-        export WORKER_CONFIG=mylo
-        python worker.py  # Uses config/mylo.yaml
+        export WORKER_CONFIG=content_repurpose
+        python worker.py  # Uses config/content_repurpose.yaml
     """
     if path is None:
         # Use environment-based config name
-        config_name = os.environ.get("WORKER_CONFIG", "default")
+        config_name = os.environ.get("WORKER_CONFIG", "content_repurpose")
         path = os.path.join(os.path.dirname(__file__), "config", f"{config_name}.yaml")
     
     if not os.path.exists(path):

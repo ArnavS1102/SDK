@@ -19,12 +19,12 @@ cd python && pip install -e .
 The SDK supports multiple configuration files. Set the `WORKER_CONFIG` environment variable to choose which config to use:
 
 ```bash
-# Use default configuration
-python worker.py  # Uses config/default.yaml
+# Use content_repurpose configuration
+python worker.py  # Uses config/content_repurpose.yaml
 
-# Use mylo configuration (CPU Lambdas + queues in this repo)
-export WORKER_CONFIG=mylo
-python worker.py  # Uses config/mylo.yaml
+# Use content_repurpose explicitly
+export WORKER_CONFIG=content_repurpose
+python worker.py  # Uses config/content_repurpose.yaml
 
 # Use production configuration
 export WORKER_CONFIG=production
@@ -32,8 +32,7 @@ python worker.py  # Uses config/production.yaml
 ```
 
 **Available configs:**
-- `default` → `config/default.yaml` (if present in your install)
-- `mylo` → `config/mylo.yaml` (CPU Lambdas + SQS queue names for this repo)
+- `content_repurpose` → `config/content_repurpose.yaml`
 
 ---
 
